@@ -33,7 +33,7 @@ from modules import (
 load_dotenv()
 
 class MiroBot(commands.Bot):
-    def __init__(self):
+    def __init__(self, proxy: str = None, proxy_auth=None):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
@@ -45,7 +45,9 @@ class MiroBot(commands.Bot):
         super().__init__(
             command_prefix=self.get_dynamic_prefix,
             intents=intents,
-            help_command=None
+            help_command=None,
+            proxy=proxy,
+            proxy_auth=proxy_auth,
         )
 
         # Initialize all systems
@@ -465,8 +467,6 @@ if __name__ == "__main__":
     import socket
     import sys
 
-    bot = MiroBot()
-
     def sanitize_error(exc: Exception) -> str:
         """Return a short, readable error message instead of raw HTML bodies."""
         text = getattr(exc, "text", "") or str(exc)
@@ -476,26 +476,77 @@ if __name__ == "__main__":
             return f"status {status}: HTML error page returned (likely Cloudflare rate limiting / blocked IP)"
         return text[:300]
 
-    def run_with_retries(bot):
-        """Run the bot, retrying transient Discord errors with exponential backoff.
+    def start_health_server():
+        """Bind Render's expected port so the Web Service is marked healthy while the bot retries."""
+        port = int(os.getenv("PORT", "10000"))
+        try:
+            import threading
+            from http.server import BaseHTTPRequestHandler, HTTPServer
 
-        A crash-and-restart loop (e.g. Render restarting an exited process) causes
-        rapid repeated logins from the same datacenter IP, which Discord/Cloudflare
-        rate-limits with HTTP 429 / error 1015. Staying alive in-process and backing
-        off breaks that loop.
+            class _HealthHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"ok")
+
+                def log_message(self, *args):
+                    pass
+
+            server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            logger.info(f"Health server listening on port {port}")
+        except Exception as e:
+            logger.warning(f"Could not start health server (port {port}): {e}")
+
+    def make_bot():
+        """Build a fresh MiroBot, optionally routed through a proxy (DISCORD_PROXY)."""
+        proxy = os.getenv("DISCORD_PROXY", "").strip()
+        proxy_auth = None
+        if proxy:
+            try:
+                import aiohttp
+                from urllib.parse import urlsplit
+                parts = urlsplit(proxy)
+                if parts.username:
+                    proxy_auth = aiohttp.BasicAuth(parts.username, parts.password or "")
+            except Exception as e:
+                logger.warning(f"Invalid DISCORD_PROXY: {e}")
+        bot = MiroBot(proxy=proxy or None, proxy_auth=proxy_auth)
+        # Custom User-Agent: helps avoid naive Cloudflare bot fingerprinting
+        try:
+            bot.http.user_agent = "MiroBot/2.0 DiscordBot (https://github.com/Malikiyaw/Miro)"
+        except Exception:
+            pass
+        return bot
+
+    def run_with_retries():
+        """Run the bot, retrying transient errors forever with capped exponential backoff.
+
+        Key points:
+        - A CRASH-AND-RESTART loop (Render restarting an exited process) causes rapid
+          repeated logins from the same datacenter IP, which Discord/Cloudflare blocks
+          with HTTP 429 / error 1015. Staying alive in-process and backing off breaks it.
+        - discord.py's bot.run() closes the HTTP session on failure, so a reused bot
+          instance dies with "Session is closed" — hence a FRESH MiroBot per attempt.
+        - While blocked, a health HTTP server keeps Render from restarting the service,
+          and we keep retrying (usually the block lifts within minutes to an hour).
         """
         token = os.getenv("DISCORD_TOKEN")
         if not token:
             logger.error("DISCORD_TOKEN is not set. Add it to your environment (Render dashboard -> Environment).")
             sys.exit(1)
 
+        start_health_server()
+
         attempt = 0
         while True:
+            bot = make_bot()
             try:
                 bot.run(token, reconnect=True)
                 logger.info("Bot stopped cleanly.")
                 return
-            except discord.PrivilegedIntentsRequired as e:
+            except discord.PrivilegedIntentsRequired:
                 logger.error(
                     "Privileged intents are not enabled. Enable 'SERVER MEMBERS INTENT' and "
                     "'PRESENCE INTENT' at https://discord.com/developers/applications -> Bot -> "
@@ -506,8 +557,9 @@ if __name__ == "__main__":
                 logger.error(f"Invalid Discord token. Double-check DISCORD_TOKEN. ({sanitize_error(e)})")
                 sys.exit(1)
             except discord.HTTPException as e:
-                if e.status == 429:
-                    wait = min(30 * (2 ** min(attempt, 6)), 3600) + random.uniform(0, 15)
+                status = getattr(e, "status", 0)
+                if status == 429:
+                    wait = min(30 * (2 ** min(attempt, 6)), 900) + random.uniform(0, 30)
                     logger.warning(
                         f"Discord is rate-limiting us (HTTP 429, likely Cloudflare blocking the datacenter IP). "
                         f"Retrying in {wait:.0f}s (attempt {attempt + 1}). {sanitize_error(e)}"
@@ -515,13 +567,19 @@ if __name__ == "__main__":
                     time.sleep(wait)
                     attempt += 1
                     continue
-                logger.error(f"Discord HTTP error {e.status}: {sanitize_error(e)}")
+                if 500 <= status < 600:
+                    wait = min(15 * (2 ** min(attempt, 6)), 600) + random.uniform(0, 15)
+                    logger.warning(f"Discord server error {status}. Retrying in {wait:.0f}s (attempt {attempt + 1})...")
+                    time.sleep(wait)
+                    attempt += 1
+                    continue
+                logger.error(f"Discord HTTP error {status}: {sanitize_error(e)}")
                 sys.exit(1)
             except discord.ConnectionClosed as e:
                 if e.code in (4000, 4006, 4009):
                     logger.error(f"Discord closed the connection (code {e.code}). Not retrying.")
                     sys.exit(1)
-                wait = min(15 * (2 ** min(attempt, 6)), 3600) + random.uniform(0, 10)
+                wait = min(15 * (2 ** min(attempt, 6)), 600) + random.uniform(0, 10)
                 logger.warning(f"Discord connection closed (code {e.code}). Reconnecting in {wait:.0f}s...")
                 time.sleep(wait)
                 attempt += 1
@@ -529,13 +587,18 @@ if __name__ == "__main__":
                 logger.error(f"Discord gateway not found: {sanitize_error(e)}")
                 sys.exit(1)
             except (socket.gaierror, TimeoutError, ConnectionError) as e:
-                wait = min(10 * (2 ** min(attempt, 6)), 3600) + random.uniform(0, 10)
+                wait = min(10 * (2 ** min(attempt, 6)), 600) + random.uniform(0, 10)
                 logger.warning(f"Network error: {e}. Retrying in {wait:.0f}s...")
                 time.sleep(wait)
                 attempt += 1
             except Exception as e:
-                logger.error(f"Unexpected fatal error: {sanitize_error(e)}")
+                # Unknown/transient failure: do NOT exit (a Render restart would restart the
+                # login storm). Back off and try again with a fresh bot instance.
+                logger.error(f"Unexpected error: {sanitize_error(e)}")
                 logger.error(traceback.format_exc())
-                sys.exit(1)
+                wait = min(30 * (2 ** min(attempt, 6)), 900) + random.uniform(0, 30)
+                logger.warning(f"Restarting in {wait:.0f}s (attempt {attempt + 1})...")
+                time.sleep(wait)
+                attempt += 1
 
-    run_with_retries(bot)
+    run_with_retries()
