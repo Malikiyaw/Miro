@@ -1,0 +1,541 @@
+import os
+import re
+from typing import Dict, List, Any
+import io
+import discord
+from discord.ext import commands
+from discord import app_commands, ui
+import asyncio
+import datetime as dt
+import random
+import signal
+import json
+import time
+from dotenv import load_dotenv
+from data_manager import dm
+from logger import logger
+from task_scheduler import TaskScheduler
+import traceback
+
+# Import all system modules
+from modules import (
+    economy, leveling, verification, anti_raid, guardian, welcome_leave,
+    tickets, suggestions, reminders, giveaways, announcements, auto_responder,
+    reaction_roles, reaction_menus, role_buttons, moderation, logging_mod,
+    mod_logging, warnings, staff_promo, staff_shifts, staff_reviews,
+    starboard, ai_chat, applications, appeals, modmail, auto_setup,
+    config_panels, intelligence, gamification, tournaments,
+    shop, automod, trigger_roles, auto_announcer, auto_publisher,
+    server_analytics, content_generator, embed_system, community_health,
+    conflict_resolution, events, staff_extras
+)
+
+load_dotenv()
+
+class MiroBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+        intents.presences = True
+        intents.guilds = True
+        intents.reactions = True
+        intents.message_content = True
+
+        super().__init__(
+            command_prefix=self.get_dynamic_prefix,
+            intents=intents,
+            help_command=None
+        )
+
+        # Initialize all systems
+        self.economy = economy.EconomySystem(self)
+        self.leveling = leveling.LevelingSystem(self)
+        self.verification = verification.VerificationSystem(self)
+        self.anti_raid = anti_raid.AntiRaidSystem(self)
+        self.guardian = guardian.GuardianSystem(self)
+        self.welcome_leave = welcome_leave.WelcomeLeaveSystem(self)
+        self.tickets = tickets.TicketSystem(self)
+        self.suggestions = suggestions.SuggestionSystem(self)
+        self.reminders = reminders.ReminderSystem(self)
+        self.giveaways = giveaways.GiveawaySystem(self)
+        self.announcements = announcements.AnnouncementSystem(self)
+        self.auto_responder = auto_responder.AutoResponderSystem(self)
+        self.reaction_roles = reaction_roles.ReactionRoleSystem(self)
+        self.reaction_menus = reaction_menus.ReactionMenuSystem(self)
+        self.role_buttons = role_buttons.RoleButtonSystem(self)
+        self.moderation = moderation.ModerationSystem(self)
+        self.logging_system = logging_mod.LoggingSystem(self)
+        self.mod_logging = mod_logging.ModLoggingSystem(self)
+        self.warnings = warnings.WarningSystem(self)
+        self.staff_promo = staff_promo.StaffPromotionSystem(self)
+        self.staff_shifts = staff_shifts.StaffShiftSystem(self)
+        self.staff_reviews = staff_reviews.StaffReviewSystem(self)
+        self.starboard = starboard.StarboardSystem(self)
+        self.ai_chat = ai_chat.AIChatSystem(self)
+        self.gamification = gamification.AdaptiveGamification(self)
+        self.tournaments = tournaments.TournamentSystem(self)
+        self.applications = applications.ApplicationSystem(self)
+        self.appeals = appeals.AppealSystem(self)
+        self.modmail = modmail.ModmailSystem(self)
+        self.auto_setup = auto_setup.AutoSetupSystem(self)
+        self.intelligence = intelligence.ServerIntelligence(self)
+
+        # Additional systems
+        self.shop = shop.Shop(self)
+        self.automod = automod.AutoModSystem(self)
+        self.trigger_roles = trigger_roles.TriggerRoles(self)
+        self.auto_announcer = auto_announcer.AutoAnnouncer(self)
+        self.auto_publisher = auto_publisher.AutoPublisher(self)
+        self.content_generator = content_generator.ContentGenerator(self)
+        self.embed_system = embed_system.EmbedSystem(self)
+        self.community_health = community_health.CommunityHealth(self)
+        self.conflict_resolution = conflict_resolution.ConflictResolution(self)
+        self.event_scheduler = events.EventScheduler(self)
+        self.staff_extras = staff_extras.StaffExtras(self)
+        self.analytics = server_analytics.setup_analytics(self)
+
+        # Task scheduler for reminders, giveaways, etc.
+        self.task_scheduler = TaskScheduler(self)
+
+        # AI client + server introspection (consumed by many modules)
+        from ai_client import AIClient
+        from server_query import ServerQueryEngine
+        from actions import ActionHandler
+        self.ai = AIClient(self, os.getenv("AI_API_KEY", ""))
+        self.server_query = ServerQueryEngine(self)
+        self.action_handler = ActionHandler(self)
+
+        # State for immortal persistence
+        self._background_tasks_started = False
+        self._persistent_views_registered = False
+
+    async def get_dynamic_prefix(self, bot, message):
+        if not message.guild:
+            return "!"
+        return dm.get_guild_data(message.guild.id, "prefix", "!")
+
+    async def setup_hook(self):
+        """Initialize bot systems and restore immortal state."""
+        logger.info("Starting Miro Bot setup...")
+
+        # Load slash commands
+        await self.load_extension('modules.slash_commands')
+
+        # Load additional cogs
+        for cog in ("cogs.core_commands", "cogs.auto_delete", "cogs.proactive_assist", "modules.proactive_assist"):
+            try:
+                await self.load_extension(cog)
+                logger.info(f"Loaded cog: {cog}")
+            except Exception as e:
+                logger.error(f"Failed to load cog {cog}: {e}")
+
+        # Sync slash commands when enabled
+        if os.getenv("SYNC_COMMANDS", "false").lower() in ("true", "1", "yes"):
+            try:
+                synced = await self.tree.sync()
+                logger.info(f"Synced {len(synced)} slash commands")
+            except Exception as e:
+                logger.error(f"Failed to sync slash commands: {e}")
+
+        # Register persistent views for immortal buttons
+        await self._register_persistent_views()
+
+        # Start background tasks
+        await self._start_background_tasks()
+
+        # Restore scheduled tasks from disk
+        await self._restore_scheduled_tasks()
+
+        logger.info("Miro Bot setup complete - all systems immortal!")
+
+    async def _register_persistent_views(self):
+        """Register all persistent views that survive bot restarts."""
+        if self._persistent_views_registered:
+            return
+
+        # Register all system persistent views
+        views_to_register = [
+            # Auto setup buttons
+            auto_setup.VerifyButton(),
+            auto_setup.AcceptRulesButton(),
+            auto_setup.CreateTicketButton(),
+            auto_setup.SuggestionButton(),
+            auto_setup.ApplyStaffButton(),
+
+            # System specific views
+            self.verification.get_persistent_views(),
+            self.tickets.get_persistent_views(),
+            self.suggestions.get_persistent_views(),
+            self.giveaways.get_persistent_views(),
+            self.applications.get_persistent_views(),
+            self.appeals.get_persistent_views(),
+            self.modmail.get_persistent_views(),
+            self.welcome_leave.get_persistent_views(),
+        ]
+
+        # Additional system views (reaction menus, role buttons, announcements)
+        if hasattr(self, "reaction_menus") and self.reaction_menus:
+            try:
+                views_to_register.append(self.reaction_menus.get_persistent_views())
+            except Exception as e:
+                logger.error(f"Reaction menus persistent views failed: {e}")
+        if hasattr(self, "role_buttons") and self.role_buttons:
+            try:
+                views_to_register.append(self.role_buttons.get_persistent_views())
+            except Exception as e:
+                logger.error(f"Role buttons persistent views failed: {e}")
+        if hasattr(self, "announcements") and self.announcements:
+            try:
+                views_to_register.append(self.announcements.get_persistent_views())
+            except Exception as e:
+                logger.error(f"Announcements persistent views failed: {e}")
+        if hasattr(self, "embed_system") and self.embed_system:
+            try:
+                views_to_register.append(self.embed_system.get_persistent_views())
+            except Exception as e:
+                logger.error(f"Embed system persistent views failed: {e}")
+
+        # Flatten the list and register
+        for view in views_to_register:
+            if isinstance(view, list):
+                for v in view:
+                    if v is not None:
+                        self.add_view(v)
+            elif view is not None:
+                self.add_view(view)
+
+        self._persistent_views_registered = True
+        logger.info("Persistent views registered")
+
+    async def _start_background_tasks(self):
+        """Start all background monitoring and automation tasks."""
+        if self._background_tasks_started:
+            return
+
+        # Start system monitors (sync methods - no await)
+        self.anti_raid.start_monitoring()
+
+        # Start task monitor methods (sync - no await needed)
+        self.staff_reviews.start_tasks()
+        self.staff_shifts.start_tasks()
+
+        # Start async monitoring tasks
+        asyncio.create_task(self._start_async_monitors())
+
+        # Start cleanup tasks
+        asyncio.create_task(self._cleanup_expired_sessions())
+        asyncio.create_task(self._auto_backup_loop())
+
+        self._background_tasks_started = True
+        logger.info("Background tasks started")
+
+    async def _start_async_monitors(self):
+        """Start all async monitoring tasks."""
+        # Guardian is a Cog - uses Discord event listeners, no explicit start needed
+        await self.giveaways.start_monitoring()
+        await self.reminders.start_monitoring()
+        await self.announcements.start_monitoring()
+        self.intelligence.start_monitoring()  # sync method
+        self.trigger_roles.start_monitoring()  # sync method
+        if self.analytics:
+            self.analytics.start_monitoring_loop()  # sync
+        self.auto_announcer.start_loops()  # sync
+        self.auto_publisher.start_bump_monitor()  # sync
+        self.event_scheduler.start_event_monitor()  # sync
+        logger.info("Async monitors started")
+
+    async def _restore_scheduled_tasks(self):
+        """Restore reminders, giveaways, and other scheduled tasks from disk."""
+        try:
+            # Restore reminders
+            reminders_data = dm.load_json("scheduled_reminders", default=[])
+            for reminder in reminders_data:
+                if reminder.get("scheduled_time", 0) > time.time():
+                    await self.task_scheduler.schedule_task(
+                        reminder["scheduled_time"],
+                        self.reminders.send_reminder,
+                        reminder
+                    )
+
+            # Restore giveaways
+            giveaways_data = dm.load_json("active_giveaways", default=[])
+            for giveaway in giveaways_data:
+                if giveaway.get("end_time", 0) > time.time():
+                    await self.task_scheduler.schedule_task(
+                        giveaway["end_time"],
+                        self.giveaways.end_giveaway,
+                        giveaway
+                    )
+
+            logger.info("Scheduled tasks restored")
+        except Exception as e:
+            logger.error(f"Failed to restore scheduled tasks: {e}")
+
+    async def _cleanup_expired_sessions(self):
+        """Clean up expired AI sessions and temporary data."""
+        while True:
+            try:
+                current_time = time.time()
+                # Clean up expired sessions from various systems
+                expired_sessions = []
+
+                # Add cleanup logic for different session types as needed
+                # For now, just sleep
+                await asyncio.sleep(3600)  # Clean every hour
+            except Exception as e:
+                logger.error(f"Session cleanup error: {e}")
+                await asyncio.sleep(3600)
+
+    async def _auto_backup_loop(self):
+        """Automatic data backup every 6 hours."""
+        while True:
+            try:
+                dm.backup_data()
+                logger.info("Automatic backup completed")
+            except Exception as e:
+                logger.error(f"Auto backup failed: {e}")
+            await asyncio.sleep(21600)  # 6 hours
+
+    async def on_ready(self):
+        """Bot is ready and connected."""
+        logger.info(f"Miro Bot ready as {self.user} (ID: {self.user.id})")
+        logger.info(f"Connected to {len(self.guilds)} guilds")
+
+        # Set up signal handlers for graceful shutdown
+        self._setup_signal_handlers()
+
+        # One-time setup tasks
+        if not hasattr(self, '_guild_setup_done'):
+            self._guild_setup_done = True
+            asyncio.create_task(self._setup_guild_data())
+
+    async def _setup_guild_data(self):
+        """Initialize data for guilds the bot is in."""
+        for guild in self.guilds:
+            # Ensure basic data structure exists
+            dm.get_guild_data(guild.id, "initialized", True)
+
+            # Set up any missing system data
+            systems = [
+                "economy", "leveling", "verification", "anti_raid", "guardian",
+                "tickets", "suggestions", "reminders", "giveaways", "announcements",
+                "auto_responder", "reaction_roles", "moderation", "warnings",
+                "staff_shifts", "staff_reviews", "starboard", "ai_chat"
+            ]
+
+            for system in systems:
+                config_key = f"{system}_config"
+                data = dm.get_guild_data(guild.id, config_key)
+                if not data:
+                    dm.update_guild_data(guild.id, config_key, {"enabled": False})
+
+        logger.info("Guild data initialization complete")
+
+    def _setup_signal_handlers(self):
+        """Set up graceful shutdown handlers."""
+        try:
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, lambda: asyncio.create_task(self._graceful_shutdown()))
+            logger.info("Signal handlers set up")
+        except Exception as e:
+            logger.warning(f"Could not set up signal handlers: {e}")
+
+    async def _graceful_shutdown(self):
+        """Clean shutdown with data persistence."""
+        logger.info("Starting graceful shutdown...")
+
+        try:
+            # Save all data
+            dm.backup_data()
+
+            # Stop background tasks
+            await self.task_scheduler.stop()
+
+            # Close bot connection
+            await self.close()
+
+            logger.info("Graceful shutdown complete")
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+        finally:
+            import sys
+            sys.exit(0)
+
+    async def on_message(self, message):
+        """Handle incoming messages."""
+        if message.author.bot:
+            return
+
+        # Handle DMs through modmail
+        if isinstance(message.channel, discord.DMChannel):
+            await self.modmail.handle_dm(message)
+            return
+
+        # Process commands
+        await self.process_commands(message)
+
+        # Handle passive system triggers
+        await self._handle_passive_systems(message)
+
+    async def _handle_passive_systems(self, message):
+        """Handle systems that react to messages passively."""
+        async def safe(coro, name):
+            try:
+                await coro
+            except Exception as e:
+                logger.error(f"{name} passive error: {e}")
+
+        # Leveling XP
+        await safe(self.leveling.handle_message(message), "leveling")
+
+        # Economy passive income
+        await safe(self.economy.handle_message(message), "economy")
+
+        # Auto responder
+        await safe(self.auto_responder.handle_message(message), "auto_responder")
+
+        # Anti-raid monitoring
+        await safe(self.anti_raid.handle_message(message), "anti_raid")
+
+        # Guardian uses Cog event listeners - no wrapper call needed
+
+        # Staff shift tracking
+        await safe(self.staff_shifts.handle_message(message), "staff_shifts")
+
+        # AI chat channels
+        await safe(self.ai_chat.handle_message(message), "ai_chat")
+
+        # Trigger roles
+        await safe(self.welcome_leave.handle_trigger_roles(message), "welcome_leave")
+        await safe(self.trigger_roles.handle_message(message), "trigger_roles")
+
+        # Auto-mod content filtering
+        await safe(self.automod.handle_message(message), "automod")
+
+        # Community health + conflict resolution (guarded — they call the AI)
+        await safe(self.community_health.analyze_interaction(message), "community_health")
+        await safe(self.conflict_resolution.analyze_message(message), "conflict_resolution")
+
+        # Auto publisher (thread publishing / bump reminders)
+        await safe(self.auto_publisher.on_message(message), "auto_publisher")
+
+    async def on_member_join(self, member):
+        """Handle member joins."""
+        try:
+            await self.verification.handle_member_join(member)
+            await self.welcome_leave.handle_member_join(member)
+            await self.anti_raid.handle_join(member)  # anti_raid uses handle_join
+        except Exception as e:
+            logger.error(f"Member join error: {e}")
+
+    async def on_member_remove(self, member):
+        """Handle member leaves."""
+        try:
+            await self.welcome_leave.handle_member_remove(member)
+            await self.anti_raid.handle_member_remove(member)
+            await self.staff_extras.on_member_remove(member)
+        except Exception as e:
+            logger.error(f"Member remove error: {e}")
+
+    async def on_reaction_add(self, reaction, user):
+        """Handle reaction adds."""
+        try:
+            await self.starboard.handle_reaction_add(reaction, user)
+            await self.suggestions.handle_reaction_add(reaction, user)
+            await self.staff_extras.on_reaction_add(reaction, user)
+        except Exception as e:
+            logger.error(f"Reaction add error: {e}")
+
+    async def on_guild_join(self, guild):
+        """Handle joining a new guild."""
+        logger.info(f"Joined new guild: {guild.name} ({guild.id})")
+        try:
+            await self.auto_setup.initialize_guild(guild)
+        except Exception as e:
+            logger.error(f"Guild join setup error: {e}")
+
+    async def on_error(self, event, *args, **kwargs):
+        """Global error handler."""
+        logger.error(f"Event error in {event}: {traceback.format_exc()}")
+
+# Create and run the bot
+if __name__ == "__main__":
+    import socket
+    import sys
+
+    bot = MiroBot()
+
+    def sanitize_error(exc: Exception) -> str:
+        """Return a short, readable error message instead of raw HTML bodies."""
+        text = getattr(exc, "text", "") or str(exc)
+        # Cut HTML bodies (Cloudflare/Discord error pages) down to one line
+        if "<!doctype html" in text.lower() or "<html" in text.lower():
+            status = getattr(exc, "status", "?")
+            return f"status {status}: HTML error page returned (likely Cloudflare rate limiting / blocked IP)"
+        return text[:300]
+
+    def run_with_retries(bot):
+        """Run the bot, retrying transient Discord errors with exponential backoff.
+
+        A crash-and-restart loop (e.g. Render restarting an exited process) causes
+        rapid repeated logins from the same datacenter IP, which Discord/Cloudflare
+        rate-limits with HTTP 429 / error 1015. Staying alive in-process and backing
+        off breaks that loop.
+        """
+        token = os.getenv("DISCORD_TOKEN")
+        if not token:
+            logger.error("DISCORD_TOKEN is not set. Add it to your environment (Render dashboard -> Environment).")
+            sys.exit(1)
+
+        attempt = 0
+        while True:
+            try:
+                bot.run(token, reconnect=True)
+                logger.info("Bot stopped cleanly.")
+                return
+            except discord.PrivilegedIntentsRequired as e:
+                logger.error(
+                    "Privileged intents are not enabled. Enable 'SERVER MEMBERS INTENT' and "
+                    "'PRESENCE INTENT' at https://discord.com/developers/applications -> Bot -> "
+                    "Privileged Gateway Intents, then restart."
+                )
+                sys.exit(1)
+            except discord.LoginFailure as e:
+                logger.error(f"Invalid Discord token. Double-check DISCORD_TOKEN. ({sanitize_error(e)})")
+                sys.exit(1)
+            except discord.HTTPException as e:
+                if e.status == 429:
+                    wait = min(30 * (2 ** min(attempt, 6)), 3600) + random.uniform(0, 15)
+                    logger.warning(
+                        f"Discord is rate-limiting us (HTTP 429, likely Cloudflare blocking the datacenter IP). "
+                        f"Retrying in {wait:.0f}s (attempt {attempt + 1}). {sanitize_error(e)}"
+                    )
+                    time.sleep(wait)
+                    attempt += 1
+                    continue
+                logger.error(f"Discord HTTP error {e.status}: {sanitize_error(e)}")
+                sys.exit(1)
+            except discord.ConnectionClosed as e:
+                if e.code in (4000, 4006, 4009):
+                    logger.error(f"Discord closed the connection (code {e.code}). Not retrying.")
+                    sys.exit(1)
+                wait = min(15 * (2 ** min(attempt, 6)), 3600) + random.uniform(0, 10)
+                logger.warning(f"Discord connection closed (code {e.code}). Reconnecting in {wait:.0f}s...")
+                time.sleep(wait)
+                attempt += 1
+            except discord.GatewayNotFound as e:
+                logger.error(f"Discord gateway not found: {sanitize_error(e)}")
+                sys.exit(1)
+            except (socket.gaierror, TimeoutError, ConnectionError) as e:
+                wait = min(10 * (2 ** min(attempt, 6)), 3600) + random.uniform(0, 10)
+                logger.warning(f"Network error: {e}. Retrying in {wait:.0f}s...")
+                time.sleep(wait)
+                attempt += 1
+            except Exception as e:
+                logger.error(f"Unexpected fatal error: {sanitize_error(e)}")
+                logger.error(traceback.format_exc())
+                sys.exit(1)
+
+    run_with_retries(bot)

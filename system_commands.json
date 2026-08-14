@@ -1,0 +1,43 @@
+{
+    "note": "This file now only contains references to command locations for documentation. Commands are defined in their respective modules.",
+    "commands": {
+        "economy": {
+            "balance": "modules/economy.py - handle_balance()",
+            "daily": "modules/economy.py - handle_daily()",
+            "work": "modules/economy.py - handle_work()",
+            "ecoleaderboard": "modules/economy.py - handle_economy_leaderboard()"
+        },
+        "leveling": {
+            "rank": "modules/leveling.py - handle_rank()",
+            "lvlleaderboard": "modules/leveling.py - handle_leveling_leaderboard()"
+        },
+        "verification": {
+            "setverifychannel": "actions.py - handle_set_verify_channel()"
+        },
+        "security": {
+            "raidstatus": "actions.py - handle_raidstatus()",
+            "guardian_status": "actions.py - handle_guardian_status()",
+            "automod_status": "actions.py - handle_automod_status()",
+            "modlog_view": "actions.py - handle_modlog_view()"
+        },
+        "staff": {
+            "staffpromo_status": "actions.py - handle_staffpromo_status()",
+            "apply": "actions.py - handle_application_apply()",
+            "appeal": "actions.py - handle_appeal_create()",
+            "ticket": "actions.py - handle_ticket_create()"
+        },
+        "gamification": {
+            "quests": "actions.py - handle_list_quests()",
+            "prestige": "actions.py - handle_prestige()"
+        },
+        "utilities": {
+            "giveaway_create": "actions.py - handle_giveaway_create()",
+            "suggest": "actions.py - handle_suggest()",
+            "remindme": "actions.py - handle_remindme()",
+            "announcement_create": "actions.py - handle_announcement_create()"
+        },
+        "help": {
+            "help": "modules/help_system.py - send_help()"
+        }
+    }
+}

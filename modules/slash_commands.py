@@ -1,0 +1,198 @@
+import discord
+from discord import app_commands
+from discord.ext import commands
+from data_manager import dm
+from logger import logger
+from modules import (
+    economy, leveling, verification, tickets, suggestions,
+    giveaways, reminders, welcome_leave, auto_setup, config_panels
+)
+from modules.guardian import GuardianSystem
+
+class SlashCommands(commands.Cog):
+    """Slash commands for the bot."""
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(name="autosetup", description="Set up bot systems for your server")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def autosetup(self, interaction: discord.Interaction):
+        """Start the auto-setup process."""
+        await self.bot.auto_setup.start_setup(interaction)
+
+    @app_commands.command(name="configpanel", description="Open configuration panel for a system")
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(system="The system to configure")
+    @app_commands.choices(system=[
+        app_commands.Choice(name="Verification", value="verification"),
+        app_commands.Choice(name="Economy", value="economy"),
+        app_commands.Choice(name="Leveling", value="leveling"),
+        app_commands.Choice(name="Tickets", value="tickets"),
+        app_commands.Choice(name="Suggestions", value="suggestions"),
+        app_commands.Choice(name="Giveaways", value="giveaways"),
+        app_commands.Choice(name="Welcome/Leave", value="welcome_leave"),
+        app_commands.Choice(name="Reminders", value="reminders"),
+        app_commands.Choice(name="Anti-Raid", value="anti_raid"),
+        app_commands.Choice(name="Auto-Mod", value="auto_mod"),
+        app_commands.Choice(name="Warnings", value="warnings"),
+        app_commands.Choice(name="Announcements", value="announcements"),
+        app_commands.Choice(name="Auto-Responder", value="auto_responder"),
+        app_commands.Choice(name="Reaction Roles", value="reaction_roles"),
+        app_commands.Choice(name="Staff Shifts", value="staff_shifts"),
+        app_commands.Choice(name="Staff Reviews", value="staff_reviews"),
+        app_commands.Choice(name="Starboard", value="starboard"),
+        app_commands.Choice(name="AI Chat", value="ai_chat"),
+        app_commands.Choice(name="Modmail", value="modmail"),
+        app_commands.Choice(name="Logging", value="logging")
+    ])
+    async def configpanel(self, interaction: discord.Interaction, system: str):
+        """Open configuration panel for a system."""
+        panel = config_panels.get_config_panel(interaction.guild.id, system)
+        if not panel:
+            return await interaction.response.send_message(f"❌ System '{system}' not found.", ephemeral=True)
+
+        embed = discord.Embed(
+            title=f"⚙️ {system.replace('_', ' ').title()} Configuration",
+            description="Use the buttons below to configure this system.",
+            color=discord.Color.blue()
+        )
+
+        emoji, description = config_panels.get_system_info(system)
+        embed.add_field(name=f"{emoji} System", value=description, inline=False)
+
+        config = panel.get_config()
+        if config:
+            settings = "\n".join(f"**{k}:** `{str(v)[:50]}`" for k, v in list(config.items())[:8])
+            embed.add_field(name="Current Settings", value=settings or "_No settings_", inline=False)
+
+        await interaction.response.send_message(embed=embed, view=panel, ephemeral=True)
+
+    # Economy commands
+    @app_commands.command(name="balance", description="Check your coin balance")
+    async def balance(self, interaction: discord.Interaction):
+        await self.bot.economy.balance(interaction)
+
+    @app_commands.command(name="daily", description="Claim your daily coins")
+    async def daily(self, interaction: discord.Interaction):
+        await self.bot.economy.daily(interaction)
+
+    @app_commands.command(name="work", description="Work for coins")
+    async def work(self, interaction: discord.Interaction):
+        await self.bot.economy.work(interaction)
+
+    @app_commands.command(name="transfer", description="Transfer coins to another user")
+    @app_commands.describe(user="User to transfer to", amount="Amount of coins")
+    async def transfer(self, interaction: discord.Interaction, user: discord.Member, amount: int):
+        await self.bot.economy.transfer(interaction, user, amount)
+
+    @app_commands.command(name="shop", description="Browse the server shop")
+    async def shop(self, interaction: discord.Interaction):
+        await self.bot.economy.shop(interaction)
+
+    @app_commands.command(name="buy", description="Buy an item from the shop")
+    @app_commands.describe(item="Name of the item to buy")
+    async def buy(self, interaction: discord.Interaction, item: str):
+        await self.bot.economy.buy(interaction, item)
+
+    @app_commands.command(name="leaderboard", description="View economy leaderboard")
+    async def leaderboard(self, interaction: discord.Interaction):
+        await self.bot.economy.leaderboard(interaction)
+
+    @app_commands.command(name="challenge", description="View daily challenge")
+    async def challenge(self, interaction: discord.Interaction):
+        await self.bot.economy.challenge(interaction)
+
+    # Leveling commands
+    @app_commands.command(name="rank", description="Check your leveling rank")
+    async def rank(self, interaction: discord.Interaction):
+        await self.bot.leveling.rank(interaction)
+
+    @app_commands.command(name="lvlleaderboard", description="View leveling leaderboard")
+    async def lvlleaderboard(self, interaction: discord.Interaction):
+        await self.bot.leveling.leaderboard(interaction)
+
+    @app_commands.command(name="rewards", description="View level rewards")
+    async def rewards(self, interaction: discord.Interaction):
+        await self.bot.leveling.rewards(interaction)
+
+    # Ticket commands
+    @app_commands.command(name="ticket", description="Create a new support ticket")
+    async def ticket(self, interaction: discord.Interaction):
+        await self.bot.tickets.create_ticket(interaction)
+
+    # Suggestion commands
+    @app_commands.command(name="suggest", description="Create a new suggestion")
+    async def suggest(self, interaction: discord.Interaction):
+        await self.bot.suggestions.create_suggestion(interaction)
+
+    # Giveaway commands
+    @app_commands.command(name="giveaway", description="Create a new giveaway")
+    @app_commands.describe(prize="What to give away", duration="Duration in seconds", winners="Number of winners")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def giveaway(self, interaction: discord.Interaction, prize: str, duration: int, winners: int = 1):
+        await self.bot.giveaways.create_giveaway(interaction, prize, duration, winners)
+
+    # Reminder commands
+    @app_commands.command(name="remind", description="Set a reminder")
+    @app_commands.describe(message="Reminder message", time="Time in seconds")
+    async def remind(self, interaction: discord.Interaction, message: str, time: int):
+        await self.bot.reminders.create_reminder(interaction, message, time, False)
+
+    @app_commands.command(name="reminders", description="List your reminders")
+    async def reminders(self, interaction: discord.Interaction):
+        await self.bot.reminders.list_reminders(interaction)
+
+    # Warning commands
+    @app_commands.command(name="warn", description="Warn a user")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.describe(user="User to warn", reason="Warning reason", severity="Warning severity")
+    @app_commands.choices(severity=[
+        app_commands.Choice(name="Low", value="low"),
+        app_commands.Choice(name="Medium", value="medium"),
+        app_commands.Choice(name="High", value="high")
+    ])
+    async def warn(self, interaction: discord.Interaction, user: discord.Member, reason: str, severity: str = "medium"):
+        await self.bot.warnings.warn_user(interaction, user, reason, severity)
+
+    @app_commands.command(name="warnings", description="View user warnings")
+    @app_commands.describe(user="User to check (optional)")
+    async def warnings(self, interaction: discord.Interaction, user: discord.Member = None):
+        await self.bot.warnings.get_user_warnings(interaction, user or interaction.user)
+
+    # Staff shift commands
+    @app_commands.command(name="shift", description="Manage staff shifts")
+    @app_commands.describe(action="Shift action")
+    @app_commands.choices(action=[
+        app_commands.Choice(name="Start", value="start"),
+        app_commands.Choice(name="End", value="end"),
+        app_commands.Choice(name="Break Start", value="break_start"),
+        app_commands.Choice(name="Break End", value="break_end")
+    ])
+    async def shift(self, interaction: discord.Interaction, action: str):
+        if action == "start":
+            await self.bot.staff_shifts.start_shift(interaction)
+        elif action == "end":
+            await self.bot.staff_shifts.end_shift(interaction)
+        elif action == "break_start":
+            await self.bot.staff_shifts.start_break(interaction)
+        elif action == "break_end":
+            await self.bot.staff_shifts.end_break(interaction)
+
+    @app_commands.command(name="myshifts", description="View your shift history")
+    async def myshifts(self, interaction: discord.Interaction):
+        await self.bot.staff_shifts.get_my_shifts(interaction)
+
+    # Application commands
+    @app_commands.command(name="apply", description="Apply for staff position")
+    async def apply(self, interaction: discord.Interaction):
+        await self.bot.applications.create_application(interaction)
+
+    # Appeal commands
+    @app_commands.command(name="appeal", description="Appeal a warning")
+    async def appeal(self, interaction: discord.Interaction):
+        await self.bot.appeals.create_appeal(interaction)
+
+async def setup(bot):
+    await bot.add_cog(SlashCommands(bot))
+    await bot.add_cog(GuardianSystem(bot))
