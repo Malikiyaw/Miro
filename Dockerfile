@@ -18,8 +18,10 @@ COPY . .
 # Create data directory
 RUN mkdir -p data logs
 
-# Set permissions
+# Make the Render/Discord entrypoint executable
 RUN chmod +x start.sh
 
-# Run the bot
-CMD ["python", "bot.py"]
+# IMPORTANT: use the async Render entrypoint. Do not start bot.py directly;
+# bot.py has its own legacy retry loop and can create repeated Discord login
+# attempts during a 429 block.
+CMD ["python", "render_entrypoint.py"]
