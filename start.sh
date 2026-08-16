@@ -1,17 +1,12 @@
 #!/bin/bash
 
 # Miro Bot Startup Script
+# Always use the resilient Render entrypoint. Starting bot.py directly uses
+# the legacy synchronous retry loop and can create repeated Discord login
+# attempts while Render's outbound IP is rate-limited.
 
-echo "Starting Miro Discord Bot..."
+set -e
 
-# Check if .env exists
-if [ ! -f .env ]; then
-    echo "Error: .env file not found. Please copy .env.example to .env and configure your settings."
-    exit 1
-fi
-
-# Create necessary directories
+echo "Starting Miro Discord Bot with resilient Render entrypoint..."
 mkdir -p data logs
-
-# Start the bot
-python bot.py
+exec python render_entrypoint.py
