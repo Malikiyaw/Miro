@@ -110,6 +110,22 @@ class MiroBot(commands.Bot):
         self.action_handler = ActionHandler(self)
         self.vector_memory = vector_memory
 
+        # Core architecture layer (V2 plan): event bus, audit, rate limits,
+        # permissions, health watchdogs. Wraps existing systems — no duplicates.
+        from core.event_bus import EventBus
+        from core.audit import AuditLog
+        from core.rate_limiter import RateLimiter
+        from core.permissions import PermissionEngine
+        from core.permissions.roles import RoleHierarchy
+        from core.health import HealthMonitor
+        from core.analytics_stream import AnalyticsCollector
+        self.event_bus = EventBus()
+        self.audit_log = AuditLog()
+        self.rate_limiter = RateLimiter()
+        self.permission_engine = PermissionEngine(RoleHierarchy())
+        self.health = HealthMonitor()
+        self.analytics_collector = AnalyticsCollector(self.event_bus)
+
         # State for immortal persistence
         self._background_tasks_started = False
         self._persistent_views_registered = False
@@ -221,8 +237,7 @@ class MiroBot(commands.Bot):
         # Start the shared task scheduler (fires reminders, giveaways, AI tasks)
         await self.task_scheduler.start()
 
-        # Start system monitors (sync methods - no await)
-        self.anti_raid.start_monitoring()
+        # Start system monitors (sync methods - no await)        self.anti_raid.start_monitoring()
 
         # Start task monitor methods (sync - no await needed)
         self.staff_reviews.start_tasks()
@@ -235,8 +250,32 @@ class MiroBot(commands.Bot):
         asyncio.create_task(self._cleanup_expired_sessions())
         asyncio.create_task(self._auto_backup_loop())
 
+        # Core V2 layer: health watchdogs + unified analytics stream
+        self._register_health_subsystems()
+        self.health.start()
+        self.analytics_collector.start()
+        asyncio.create_task(self.analytics_collector.flush_loop())
+
         self._background_tasks_started = True
         logger.info("Background tasks started")
+
+    def _register_health_subsystems(self):
+        """Register watchdogs for the subsystems named in the architecture plan."""
+        health = self.health
+
+        health.register("gateway", lambda: self.is_ready())
+        health.register("scheduler", lambda: getattr(self.task_scheduler, "_running", False))
+        health.register("database", self._check_database)
+        health.register("ai_client", lambda: bool(os.getenv("AI_API_KEY")))
+        health.register("event_bus", lambda: True)
+
+    @staticmethod
+    async def _check_database() -> bool:
+        try:
+            import os as _os
+            return _os.access("data", _os.W_OK)
+        except Exception:
+            return False
 
     async def _start_async_monitors(self):
         """Start all async monitoring tasks."""
@@ -413,12 +452,22 @@ class MiroBot(commands.Bot):
         # Auto publisher (thread publishing / bump reminders)
         await safe(self.auto_publisher.on_message(message), "auto_publisher")
 
+        # Internal event bus (analytics + future reactive systems)
+        if getattr(message, "guild", None) is not None:
+            await self.event_bus.publish(
+                "message.created",
+                guild_id=message.guild.id,
+                user_id=message.author.id,
+                channel_id=getattr(message.channel, "id", None),
+            )
+
     async def on_member_join(self, member):
         """Handle member joins."""
         try:
             await self.verification.handle_member_join(member)
             await self.welcome_leave.handle_member_join(member)
             await self.anti_raid.handle_join(member)  # anti_raid uses handle_join
+            asyncio.create_task(self.event_bus.publish("member.joined", guild_id=member.guild.id, user_id=member.id))
         except Exception as e:
             logger.error(f"Member join error: {e}")
 
@@ -428,6 +477,7 @@ class MiroBot(commands.Bot):
             await self.welcome_leave.handle_member_remove(member)
             await self.anti_raid.handle_member_remove(member)
             await self.staff_extras.on_member_remove(member)
+            asyncio.create_task(self.event_bus.publish("member.left", guild_id=member.guild.id, user_id=member.id))
         except Exception as e:
             logger.error(f"Member remove error: {e}")
 

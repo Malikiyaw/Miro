@@ -9,6 +9,7 @@ import datetime as dt
 from typing import List, Dict, Any, Tuple, Optional
 from data_manager import dm
 from logger import logger
+from core.audit import SOURCE_AI, SOURCE_COMMAND
 from utils.deduplicator import deduplicator
 from ui_components import *
 from animated_assets import get_animated_emoji, get_success_gif, create_success_embed, create_loading_embed
@@ -700,6 +701,19 @@ class ActionHandler:
         """Routes action names to specific methods with permission enforcement. Returns (success, undo_data)."""
         name = self._normalize_action_name(name)
 
+        # --- RATE LIMITING (multi-tier; admins exempt from emergency stop on commands) ---
+        limiter = getattr(self.bot, "rate_limiter", None)
+        if limiter is not None:
+            is_admin_caller = bool(getattr(interaction.user, "guild_permissions", None) and
+                                   interaction.user.guild_permissions.administrator)
+            guild_ok, g_wait = limiter.check("guild", interaction.guild.id)
+            user_ok, u_wait = limiter.check("user", interaction.user.id, exempt=is_admin_caller and self._is_read_only(name))
+            if not (guild_ok and user_ok):
+                wait = max(g_wait, u_wait)
+                logger.warning("Rate limited action '%s' for user %s in guild %s; retry in %.0fs",
+                               name, interaction.user.id, interaction.guild.id, wait)
+                return False, {"error": f"Rate limit reached. Try again in {wait:.0f}s.", "retry_after": wait}
+
         # --- PERMISSION ENFORCEMENT ---
         # Critical Security: Ensure the initiating user has Administrator permission
         # for sensitive actions. This prevents exploitation via AI or custom commands.
@@ -722,15 +736,68 @@ class ActionHandler:
                     "Blocked sensitive action '%s' triggered by non-admin user %s (%d) in guild %d",
                     name, interaction.user, interaction.user.id, interaction.guild.id
                 )
+                self._audit_action(name, interaction, params, success=False,
+                                   error="non-admin blocked")
                 return False, {"error": f"You do not have Administrator permission to execute the '{name}' action."}
 
         method_name = f"action_{name}"
         if hasattr(self, method_name):
             method = getattr(self, method_name)
-            return await method(interaction, params)
+            try:
+                success, undo_data = await method(interaction, params)
+            except Exception as e:
+                self._audit_action(name, interaction, params, success=False, error=str(e))
+                self._publish_action_event(name, interaction, success=False)
+                raise
+            self._audit_action(name, interaction, params, success=success, result=undo_data)
+            self._publish_action_event(name, interaction, success=success)
+            return success, undo_data
         else:
             logger.warning("Unknown action: %s", name)
             return False, None
+
+    def _publish_action_event(self, name: str, interaction, success: bool):
+        """Fan the executed action out on the internal event bus (analytics, etc.)."""
+        bus = getattr(self.bot, "event_bus", None)
+        if bus is None:
+            return
+        try:
+            guild = getattr(interaction, "guild", None)
+            asyncio.create_task(bus.publish(
+                "action.executed",
+                guild_id=getattr(guild, "id", None),
+                actor_id=getattr(getattr(interaction, "user", None), "id", None),
+                action=name,
+                success=success,
+            ))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _is_read_only(name: str) -> bool:
+        return name.startswith(("query_", "analyze_"))
+
+    def _audit_action(self, name: str, interaction, params, success: bool,
+                      error: str = "", result=None):
+        """Best-effort unified audit record; never breaks action execution."""
+        audit = getattr(self.bot, "audit_log", None)
+        if audit is None:
+            return
+        try:
+            source = SOURCE_AI if getattr(interaction, "user", None) is not None and \
+                getattr(interaction, "_miro_ai_source", False) else SOURCE_COMMAND
+            audit.record_action(
+                name,
+                actor_id=getattr(getattr(interaction, "user", None), "id", None),
+                target=str(params.get("channel_name") or params.get("role_name") or params.get("user_id") or "")[:120],
+                guild_id=getattr(getattr(interaction, "guild", None), "id", None),
+                source=source,
+                success=success,
+                error=error,
+                params={k: str(v)[:80] for k, v in list(params.items())[:5]} if isinstance(params, dict) else {},
+            )
+        except Exception as e:
+            logger.debug(f"Audit record failed for '{name}': {e}")
 
     # --- Meta / Planning Actions ---
 

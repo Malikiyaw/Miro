@@ -26,6 +26,11 @@ _state = {
     "next_retry": 0.0,
 }
 _state_lock = threading.Lock()
+_current_bot_ref = {"bot": None}
+
+
+def _current_bot():
+    return _current_bot_ref.get("bot")
 
 
 def set_state(**values):
@@ -42,12 +47,26 @@ class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         state = snapshot_state()
         if self.path.rstrip("/") == "/status":
-            body = (
-                f"status={state['status']}\n"
-                f"attempt={state['attempt']}\n"
-                f"retry_in={int(max(0, state['next_retry'] - time.time()))}\n"
-                f"last_error={state['last_error'][:300]}\n"
-            ).encode("utf-8", "replace")
+            lines = [
+                f"status={state['status']}",
+                f"attempt={state['attempt']}",
+                f"retry_in={int(max(0, state['next_retry'] - time.time()))}",
+                f"last_error={state['last_error'][:300]}",
+            ]
+            bot = _current_bot()
+            if bot is not None:
+                try:
+                    health = getattr(bot, "health", None)
+                    if health is not None:
+                        for name, info in sorted(health.snapshot().items()):
+                            lines.append(f"subsystem.{name}={info['status']} ({info['failures']} failures)")
+                        lines.append(f"overall={health.overall()}")
+                    limiter = getattr(bot, "rate_limiter", None)
+                    if limiter is not None:
+                        lines.append(f"rate_limiter_emergency={limiter.emergency}")
+                except Exception:
+                    pass
+            body = ("\n".join(lines) + "\n").encode("utf-8", "replace")
         else:
             body = b"ok\n"
 
@@ -124,6 +143,7 @@ async def run_forever():
 
     while True:
         bot = build_bot()
+        _current_bot_ref["bot"] = bot
         set_state(status="connecting", attempt=attempt + 1, last_error="")
 
         try:
