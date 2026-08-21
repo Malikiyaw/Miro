@@ -14,7 +14,7 @@ import time
 from dotenv import load_dotenv
 from data_manager import dm
 from logger import logger
-from task_scheduler import TaskScheduler
+from task_scheduler import task_scheduler
 import traceback
 
 # Import all system modules
@@ -97,16 +97,18 @@ class MiroBot(commands.Bot):
         self.staff_extras = staff_extras.StaffExtras(self)
         self.analytics = server_analytics.setup_analytics(self)
 
-        # Task scheduler for reminders, giveaways, etc.
-        self.task_scheduler = TaskScheduler(self)
+        # Task scheduler for reminders, giveaways, etc. (shared singleton)
+        self.task_scheduler = task_scheduler
 
         # AI client + server introspection (consumed by many modules)
         from ai_client import AIClient
         from server_query import ServerQueryEngine
         from actions import ActionHandler
+        from vector_memory import vector_memory
         self.ai = AIClient(self, os.getenv("AI_API_KEY", ""))
         self.server_query = ServerQueryEngine(self)
         self.action_handler = ActionHandler(self)
+        self.vector_memory = vector_memory
 
         # State for immortal persistence
         self._background_tasks_started = False
@@ -124,8 +126,9 @@ class MiroBot(commands.Bot):
         # Load slash commands
         await self.load_extension('modules.slash_commands')
 
-        # Load additional cogs
-        for cog in ("cogs.core_commands", "cogs.auto_delete", "cogs.proactive_assist", "modules.proactive_assist"):
+        # Load additional cogs (modules.proactive_assist is the AI advisor;
+        # cogs.proactive_assist is a redundant duplicate loop, so it is not loaded)
+        for cog in ("cogs.core_commands", "cogs.auto_delete", "modules.proactive_assist"):
             try:
                 await self.load_extension(cog)
                 logger.info(f"Loaded cog: {cog}")
@@ -146,8 +149,8 @@ class MiroBot(commands.Bot):
         # Start background tasks
         await self._start_background_tasks()
 
-        # Restore scheduled tasks from disk
-        await self._restore_scheduled_tasks()
+        # Note: pending reminders/giveaways are restored per-guild by
+        # giveaways.start_monitoring() / reminders.start_monitoring() above.
 
         logger.info("Miro Bot setup complete - all systems immortal!")
 
@@ -215,6 +218,9 @@ class MiroBot(commands.Bot):
         if self._background_tasks_started:
             return
 
+        # Start the shared task scheduler (fires reminders, giveaways, AI tasks)
+        await self.task_scheduler.start()
+
         # Start system monitors (sync methods - no await)
         self.anti_raid.start_monitoring()
 
@@ -234,45 +240,29 @@ class MiroBot(commands.Bot):
 
     async def _start_async_monitors(self):
         """Start all async monitoring tasks."""
+        # Each monitor is isolated so one failure can't kill the others
+        async def safe(name, coro=None, func=None):
+            try:
+                if coro is not None:
+                    await coro
+                elif func is not None:
+                    func()
+            except Exception as e:
+                logger.error(f"{name} monitor failed to start: {e}")
+
         # Guardian is a Cog - uses Discord event listeners, no explicit start needed
-        await self.giveaways.start_monitoring()
-        await self.reminders.start_monitoring()
-        await self.announcements.start_monitoring()
-        self.intelligence.start_monitoring()  # sync method
-        self.trigger_roles.start_monitoring()  # sync method
+        await safe("giveaways", coro=self.giveaways.start_monitoring())
+        await safe("reminders", coro=self.reminders.start_monitoring())
+        await safe("announcements", coro=self.announcements.start_monitoring())
+        await safe("intelligence", func=self.intelligence.start_monitoring)
+        await safe("trigger_roles", func=self.trigger_roles.start_monitoring)
         if self.analytics:
-            self.analytics.start_monitoring_loop()  # sync
-        self.auto_announcer.start_loops()  # sync
-        self.auto_publisher.start_bump_monitor()  # sync
-        self.event_scheduler.start_event_monitor()  # sync
+            await safe("analytics", func=self.analytics.start_monitoring_loop)
+        await safe("auto_announcer", func=self.auto_announcer.start_loops)
+        await safe("auto_publisher", func=self.auto_publisher.start_bump_monitor)
+        await safe("event_scheduler", func=self.event_scheduler.start_event_monitor)
+        await safe("gamification", func=self.gamification.start_quest_refresh)
         logger.info("Async monitors started")
-
-    async def _restore_scheduled_tasks(self):
-        """Restore reminders, giveaways, and other scheduled tasks from disk."""
-        try:
-            # Restore reminders
-            reminders_data = dm.load_json("scheduled_reminders", default=[])
-            for reminder in reminders_data:
-                if reminder.get("scheduled_time", 0) > time.time():
-                    await self.task_scheduler.schedule_task(
-                        reminder["scheduled_time"],
-                        self.reminders.send_reminder,
-                        reminder
-                    )
-
-            # Restore giveaways
-            giveaways_data = dm.load_json("active_giveaways", default=[])
-            for giveaway in giveaways_data:
-                if giveaway.get("end_time", 0) > time.time():
-                    await self.task_scheduler.schedule_task(
-                        giveaway["end_time"],
-                        self.giveaways.end_giveaway,
-                        giveaway
-                    )
-
-            logger.info("Scheduled tasks restored")
-        except Exception as e:
-            logger.error(f"Failed to restore scheduled tasks: {e}")
 
     async def _cleanup_expired_sessions(self):
         """Clean up expired AI sessions and temporary data."""

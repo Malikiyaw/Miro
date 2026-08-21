@@ -48,7 +48,7 @@ class SlashCommands(commands.Cog):
     ])
     async def configpanel(self, interaction: discord.Interaction, system: str):
         """Open configuration panel for a system."""
-        panel = config_panels.get_config_panel(interaction.guild.id, system)
+        panel = config_panels.get_config_panel(interaction.guild.id, system, self.bot)
         if not panel:
             return await interaction.response.send_message(f"❌ System '{system}' not found.", ephemeral=True)
 
@@ -195,4 +195,6 @@ class SlashCommands(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(SlashCommands(bot))
-    await bot.add_cog(GuardianSystem(bot))
+    # Reuse the instance created in MiroBot.__init__ so its listeners and
+    # bot.guardian references point at the same object.
+    await bot.add_cog(getattr(bot, "guardian", None) or GuardianSystem(bot))

@@ -51,7 +51,7 @@ class ReminderSystem:
 
         # Schedule execution
         from task_scheduler import task_scheduler
-        await task_scheduler.schedule_task(reminder_time, self.send_reminder, reminder_data)
+        task_scheduler.schedule_task(reminder_time, self.send_reminder, reminder_data)
 
         # Add to active reminders
         if interaction.user.id not in self.active_reminders:
@@ -99,7 +99,7 @@ class ReminderSystem:
 
                 # Reschedule
                 from task_scheduler import task_scheduler
-                await task_scheduler.schedule_task(next_time, self.send_reminder, reminder_data)
+                task_scheduler.schedule_task(next_time, self.send_reminder, reminder_data)
 
             else:
                 # Remove one-time reminder
@@ -193,7 +193,7 @@ class ReminderSystem:
 
                     # Reschedule
                     from task_scheduler import task_scheduler
-                    await task_scheduler.schedule_task(reminder["reminder_time"], self.send_reminder, reminder)
+                    task_scheduler.schedule_task(reminder["reminder_time"], self.send_reminder, reminder)
 
     # Config panel
     def get_config_panel(self, guild_id: int):

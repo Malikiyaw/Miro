@@ -24,7 +24,7 @@ class ConfigPanelView(ui.View):
             return False
         return True
 
-def get_config_panel(guild_id: int, system: str):
+def get_config_panel(guild_id: int, system: str, bot=None):
     """Factory function to get the appropriate config panel."""
     panels = {
         "verification": VerificationConfigPanel,
@@ -51,7 +51,7 @@ def get_config_panel(guild_id: int, system: str):
 
     panel_class = panels.get(system)
     if panel_class:
-        return panel_class(guild_id)
+        return panel_class(bot, guild_id)
     return None
 
 def get_system_info(system: str) -> tuple:
@@ -90,8 +90,8 @@ from modules.giveaways import GiveawaysConfigPanel
 
 # Additional config panels
 class WelcomeConfigPanel(ConfigPanelView):
-    def __init__(self, guild_id: int):
-        super().__init__(None, guild_id, "welcome_leave")
+    def __init__(self, bot, guild_id: int):
+        super().__init__(bot, guild_id, "welcome_leave")
 
     @discord.ui.button(label="Toggle Welcome", style=discord.ButtonStyle.primary, row=0)
     async def toggle_welcome(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -106,8 +106,8 @@ class WelcomeConfigPanel(ConfigPanelView):
         await interaction.response.send_modal(modal)
 
 class AntiRaidConfigPanel(ConfigPanelView):
-    def __init__(self, guild_id: int):
-        super().__init__(None, guild_id, "anti_raid")
+    def __init__(self, bot, guild_id: int):
+        super().__init__(bot, guild_id, "anti_raid")
 
     @discord.ui.button(label="Toggle Anti-Raid", style=discord.ButtonStyle.primary, row=0)
     async def toggle_anti_raid(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -117,8 +117,8 @@ class AntiRaidConfigPanel(ConfigPanelView):
         await interaction.response.send_message(f"✅ Anti-raid {'enabled' if config['enabled'] else 'disabled'}", ephemeral=True)
 
 class AutoModConfigPanel(ConfigPanelView):
-    def __init__(self, guild_id: int):
-        super().__init__(None, guild_id, "auto_mod")
+    def __init__(self, bot, guild_id: int):
+        super().__init__(bot, guild_id, "auto_mod")
 
     @discord.ui.button(label="Toggle Auto-Mod", style=discord.ButtonStyle.primary, row=0)
     async def toggle_auto_mod(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -128,8 +128,8 @@ class AutoModConfigPanel(ConfigPanelView):
         await interaction.response.send_message(f"✅ Auto-mod {'enabled' if config['enabled'] else 'disabled'}", ephemeral=True)
 
 class WarningsConfigPanel(ConfigPanelView):
-    def __init__(self, guild_id: int):
-        super().__init__(None, guild_id, "warnings")
+    def __init__(self, bot, guild_id: int):
+        super().__init__(bot, guild_id, "warnings")
 
     @discord.ui.button(label="Toggle Warnings", style=discord.ButtonStyle.primary, row=0)
     async def toggle_warnings(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -139,8 +139,8 @@ class WarningsConfigPanel(ConfigPanelView):
         await interaction.response.send_message(f"✅ Warnings {'enabled' if config['enabled'] else 'disabled'}", ephemeral=True)
 
 class RemindersConfigPanel(ConfigPanelView):
-    def __init__(self, guild_id: int):
-        super().__init__(None, guild_id, "reminders")
+    def __init__(self, bot, guild_id: int):
+        super().__init__(bot, guild_id, "reminders")
 
     @discord.ui.button(label="Toggle Reminders", style=discord.ButtonStyle.primary, row=0)
     async def toggle_reminders(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -150,8 +150,8 @@ class RemindersConfigPanel(ConfigPanelView):
         await interaction.response.send_message(f"✅ Reminders {'enabled' if config['enabled'] else 'disabled'}", ephemeral=True)
 
 class AnnouncementsConfigPanel(ConfigPanelView):
-    def __init__(self, guild_id: int):
-        super().__init__(None, guild_id, "announcements")
+    def __init__(self, bot, guild_id: int):
+        super().__init__(bot, guild_id, "announcements")
 
     @discord.ui.button(label="Toggle Announcements", style=discord.ButtonStyle.primary, row=0)
     async def toggle_announcements(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -161,8 +161,8 @@ class AnnouncementsConfigPanel(ConfigPanelView):
         await interaction.response.send_message(f"✅ Announcements {'enabled' if config['enabled'] else 'disabled'}", ephemeral=True)
 
 class AutoResponderConfigPanel(ConfigPanelView):
-    def __init__(self, guild_id: int):
-        super().__init__(None, guild_id, "auto_responder")
+    def __init__(self, bot, guild_id: int):
+        super().__init__(bot, guild_id, "auto_responder")
 
     @discord.ui.button(label="Toggle Auto-Responder", style=discord.ButtonStyle.primary, row=0)
     async def toggle_auto_responder(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -172,8 +172,8 @@ class AutoResponderConfigPanel(ConfigPanelView):
         await interaction.response.send_message(f"✅ Auto-responder {'enabled' if config['enabled'] else 'disabled'}", ephemeral=True)
 
 class ReactionRolesConfigPanel(ConfigPanelView):
-    def __init__(self, guild_id: int):
-        super().__init__(None, guild_id, "reaction_roles")
+    def __init__(self, bot, guild_id: int):
+        super().__init__(bot, guild_id, "reaction_roles")
 
     @discord.ui.button(label="Toggle Reaction Roles", style=discord.ButtonStyle.primary, row=0)
     async def toggle_reaction_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -183,8 +183,8 @@ class ReactionRolesConfigPanel(ConfigPanelView):
         await interaction.response.send_message(f"✅ Reaction roles {'enabled' if config['enabled'] else 'disabled'}", ephemeral=True)
 
 class StaffShiftsConfigPanel(ConfigPanelView):
-    def __init__(self, guild_id: int):
-        super().__init__(None, guild_id, "staff_shifts")
+    def __init__(self, bot, guild_id: int):
+        super().__init__(bot, guild_id, "staff_shifts")
 
     @discord.ui.button(label="Toggle Staff Shifts", style=discord.ButtonStyle.primary, row=0)
     async def toggle_staff_shifts(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -194,8 +194,8 @@ class StaffShiftsConfigPanel(ConfigPanelView):
         await interaction.response.send_message(f"✅ Staff shifts {'enabled' if config['enabled'] else 'disabled'}", ephemeral=True)
 
 class StaffReviewsConfigPanel(ConfigPanelView):
-    def __init__(self, guild_id: int):
-        super().__init__(None, guild_id, "staff_reviews")
+    def __init__(self, bot, guild_id: int):
+        super().__init__(bot, guild_id, "staff_reviews")
 
     @discord.ui.button(label="Toggle Staff Reviews", style=discord.ButtonStyle.primary, row=0)
     async def toggle_staff_reviews(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -205,8 +205,8 @@ class StaffReviewsConfigPanel(ConfigPanelView):
         await interaction.response.send_message(f"✅ Staff reviews {'enabled' if config['enabled'] else 'disabled'}", ephemeral=True)
 
 class StarboardConfigPanel(ConfigPanelView):
-    def __init__(self, guild_id: int):
-        super().__init__(None, guild_id, "starboard")
+    def __init__(self, bot, guild_id: int):
+        super().__init__(bot, guild_id, "starboard")
 
     @discord.ui.button(label="Toggle Starboard", style=discord.ButtonStyle.primary, row=0)
     async def toggle_starboard(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -216,8 +216,8 @@ class StarboardConfigPanel(ConfigPanelView):
         await interaction.response.send_message(f"✅ Starboard {'enabled' if config['enabled'] else 'disabled'}", ephemeral=True)
 
 class AIChatConfigPanel(ConfigPanelView):
-    def __init__(self, guild_id: int):
-        super().__init__(None, guild_id, "ai_chat")
+    def __init__(self, bot, guild_id: int):
+        super().__init__(bot, guild_id, "ai_chat")
 
     @discord.ui.button(label="Toggle AI Chat", style=discord.ButtonStyle.primary, row=0)
     async def toggle_ai_chat(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -227,8 +227,8 @@ class AIChatConfigPanel(ConfigPanelView):
         await interaction.response.send_message(f"✅ AI chat {'enabled' if config['enabled'] else 'disabled'}", ephemeral=True)
 
 class ModmailConfigPanel(ConfigPanelView):
-    def __init__(self, guild_id: int):
-        super().__init__(None, guild_id, "modmail")
+    def __init__(self, bot, guild_id: int):
+        super().__init__(bot, guild_id, "modmail")
 
     @discord.ui.button(label="Toggle Modmail", style=discord.ButtonStyle.primary, row=0)
     async def toggle_modmail(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -238,8 +238,8 @@ class ModmailConfigPanel(ConfigPanelView):
         await interaction.response.send_message(f"✅ Modmail {'enabled' if config['enabled'] else 'disabled'}", ephemeral=True)
 
 class LoggingConfigPanel(ConfigPanelView):
-    def __init__(self, guild_id: int):
-        super().__init__(None, guild_id, "logging")
+    def __init__(self, bot, guild_id: int):
+        super().__init__(bot, guild_id, "logging")
 
     @discord.ui.button(label="Toggle Logging", style=discord.ButtonStyle.primary, row=0)
     async def toggle_logging(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -271,9 +271,9 @@ class SetChannelModal(discord.ui.Modal):
         except ValueError:
             await interaction.response.send_message("❌ Invalid channel ID", ephemeral=True)
 
-def handle_config_panel_command(guild_id: int, system: str):
+def handle_config_panel_command(guild_id: int, system: str, bot=None):
     """Handle the config panel command."""
-    panel = get_config_panel(guild_id, system)
+    panel = get_config_panel(guild_id, system, bot)
     return panel
 
 
@@ -308,7 +308,7 @@ class ConfigPanels:
             )
             return await message.channel.send(embed=embed)
 
-        panel = get_config_panel(message.guild.id, system)
+        panel = get_config_panel(message.guild.id, system, self.bot)
         if not panel:
             return await message.channel.send(f"❌ Unknown system '{system}'. Use `!configpanel` to list systems.")
 

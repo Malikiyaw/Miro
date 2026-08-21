@@ -65,7 +65,7 @@ class GiveawaySystem:
 
         # Schedule end
         from task_scheduler import task_scheduler
-        await task_scheduler.schedule_task(end_time, self.end_giveaway, giveaway_data)
+        task_scheduler.schedule_task(end_time, self.end_giveaway, giveaway_data)
 
         await interaction.response.send_message("✅ Giveaway created!", ephemeral=True)
 
@@ -229,7 +229,7 @@ class GiveawaySystem:
 
                     # Reschedule end task
                     from task_scheduler import task_scheduler
-                    await task_scheduler.schedule_task(giveaway["end_time"], self.end_giveaway, giveaway)
+                    task_scheduler.schedule_task(giveaway["end_time"], self.end_giveaway, giveaway)
 
     # Config panel
     def get_config_panel(self, guild_id: int):

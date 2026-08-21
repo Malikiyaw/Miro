@@ -53,6 +53,30 @@ def parse_color(color_val):
             pass
     # Default fallback
     return 0x3498DB
+
+class ScheduledTaskInteraction:
+    """Minimal interaction stand-in for actions executed by the task scheduler.
+    The bot-user identity exempts scheduled actions from the admin permission gate."""
+    def __init__(self, bot, guild_id: int):
+        self.bot = bot
+        self.guild = bot.get_guild(guild_id)
+        self.user = bot.user
+        self.channel = getattr(self.guild, "system_channel", None) if self.guild else None
+        self.response = self
+        self.followup = self
+
+    async def send(self, *args, **kwargs):
+        pass
+
+    async def send_message(self, *args, **kwargs):
+        pass
+
+    async def edit_message(self, *args, **kwargs):
+        pass
+
+    async def defer(self, *args, **kwargs):
+        pass
+
 def is_system_enabled(guild_id: int, system_name: str) -> bool:
     """Check if a system is enabled for a guild. Returns False if not installed."""
     config_key = f"{system_name}_config"
@@ -334,7 +358,8 @@ class ActionHandler:
                 return
 
             with open(mapping_file, "r") as f:
-                system_commands = json.load(f)
+                # Entries live under the top-level "commands" key
+                system_commands = json.load(f).get("commands", {})
 
             if system_type not in system_commands:
                 logger.info(f"No commands defined for system_type: {system_type}")
@@ -2524,8 +2549,8 @@ class ActionHandler:
 
         try:
             await member.kick(reason=reason)
-            if hasattr(self.bot, 'staff_shift'):
-                await self.bot.staff_shift.track_moderation_action(interaction.guild.id, interaction.user.id)
+            if hasattr(self.bot, 'staff_shifts'):
+                await self.bot.staff_shifts.track_moderation_action(interaction.guild.id, interaction.user.id)
             return True, {"user_id": user_id, "action": "kick"}
         except discord.Forbidden:
             return False, {"error": "Missing permission to kick"}
@@ -2541,8 +2566,8 @@ class ActionHandler:
             return False, {"error": "User not found"}
         try:
             await member.edit(mute=True, reason=reason)
-            if hasattr(self.bot, 'staff_shift'):
-                await self.bot.staff_shift.track_moderation_action(interaction.guild.id, interaction.user.id)
+            if hasattr(self.bot, 'staff_shifts'):
+                await self.bot.staff_shifts.track_moderation_action(interaction.guild.id, interaction.user.id)
             return True, {"message": f"Muted {member.display_name}"}
         except Exception as e:
             return False, {"error": str(e)}
@@ -2589,8 +2614,8 @@ class ActionHandler:
                 await member.ban(reason=reason, delete_message_days=delete_days)
             else:
                 await interaction.guild.ban(discord.Object(user_id), reason=reason, delete_message_days=delete_days)
-            if hasattr(self.bot, 'staff_shift'):
-                await self.bot.staff_shift.track_moderation_action(interaction.guild.id, interaction.user.id)
+            if hasattr(self.bot, 'staff_shifts'):
+                await self.bot.staff_shifts.track_moderation_action(interaction.guild.id, interaction.user.id)
             return True, {"user_id": user_id, "action": "ban"}
         except discord.Forbidden:
             return False, {"error": "Missing permission to ban"}
@@ -2625,8 +2650,8 @@ class ActionHandler:
             import datetime
             timeout_until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=duration)
             await member.timeout(timeout_until, reason=reason)
-            if hasattr(self.bot, 'staff_shift'):
-                await self.bot.staff_shift.track_moderation_action(interaction.guild.id, interaction.user.id)
+            if hasattr(self.bot, 'staff_shifts'):
+                await self.bot.staff_shifts.track_moderation_action(interaction.guild.id, interaction.user.id)
             return True, {"user_id": user_id, "duration": duration, "action": "timeout"}
         except discord.Forbidden:
             return False, {"error": "Missing permission to timeout"}
@@ -2848,10 +2873,37 @@ class ActionHandler:
         return True, {"message": "Notification sent"}
 
     async def action_create_task(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        """Schedule a recurring task from a cron expression; handler is an action name
+        dispatched with bot identity at each fire time."""
+        from datetime import datetime
+
         name = params.get("name")
         cron = params.get("cron")
         handler = params.get("handler")
-        self.bot.scheduler.add_ai_task(name, interaction.guild.id, cron, handler, {})
+        if not all(isinstance(v, str) and v.strip() for v in (name, cron, handler)):
+            return False, {"error": "create_task requires 'name', 'cron' and 'handler'."}
+
+        try:
+            from croniter import croniter
+            next_run = croniter(cron, datetime.now()).get_next(float)
+        except Exception as e:
+            return False, {"error": f"Invalid cron expression '{cron}': {e}"}
+
+        from task_scheduler import task_scheduler
+
+        async def _run_ai_task(task_name=name, cron_expr=cron, handler_name=handler, guild_id=interaction.guild.id):
+            try:
+                mock = ScheduledTaskInteraction(self.bot, guild_id)
+                if mock.guild is None:
+                    logger.error(f"Scheduled task '{task_name}': guild {guild_id} not found; task dropped")
+                    return
+                await self.dispatch(mock, handler_name, {})
+                nxt = croniter(cron_expr, datetime.now()).get_next(float)
+                task_scheduler.schedule_task(nxt, _run_ai_task)
+            except Exception as e:
+                logger.error(f"Scheduled AI task '{task_name}' failed: {e}")
+
+        task_scheduler.schedule_task(next_run, _run_ai_task)
         return True, {"message": f"Task {name} scheduled"}
 
     async def action_update_profile(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
@@ -2923,8 +2975,8 @@ class ActionHandler:
             # discord.py 2.0+ uses delete_message_seconds
             await member.ban(reason="Softban (clear messages)", delete_message_seconds=days * 86400)
             await interaction.guild.unban(member, reason="Softban completion")
-            if hasattr(self.bot, 'staff_shift'):
-                await self.bot.staff_shift.track_moderation_action(interaction.guild.id, interaction.user.id)
+            if hasattr(self.bot, 'staff_shifts'):
+                await self.bot.staff_shifts.track_moderation_action(interaction.guild.id, interaction.user.id)
             return True, None
         except Exception as e:
             return False, {"error": str(e)}
@@ -3133,8 +3185,8 @@ class ActionHandler:
                 history.last_violation = time.time()
                 self.bot.moderation.save_user_history(guild_id, user_id, history)
 
-            if hasattr(self.bot, 'staff_shift'):
-                await self.bot.staff_shift.track_moderation_action(interaction.guild.id, interaction.user.id)
+            if hasattr(self.bot, 'staff_shifts'):
+                await self.bot.staff_shifts.track_moderation_action(interaction.guild.id, interaction.user.id)
 
             logger.info("Issued warning to %s in guild %d: %s", member.display_name, guild_id, reason)
 
@@ -6871,7 +6923,7 @@ class ActionHandler:
             return False
 
         from modules.config_panels import handle_config_panel_command
-        panel = handle_config_panel_command(message.guild.id, system)
+        panel = handle_config_panel_command(message.guild.id, system, self.bot)
         if panel:
             await message.channel.send(f"⚙️ **{system.title()}** Configuration", view=panel)
         else:
@@ -6934,7 +6986,7 @@ class ActionHandler:
             guild = message.guild
             member = message.author
             staff_promo = self.bot.staff_promo
-            promotion_service = self.bot.promotion_service
+            promotion_service = self.bot.staff_promo.promotion_service
 
             # Loading animation
             loading_embed = discord.Embed(
@@ -7133,7 +7185,7 @@ class ActionHandler:
         
         guild = message.guild
         staff_promo = self.bot.staff_promo
-        promotion_service = self.bot.promotion_service
+        promotion_service = self.bot.staff_promo.promotion_service
 
         config = staff_promo._get_full_config(guild.id)
         metrics = config.get("metrics", staff_promo._default_metrics)
@@ -7188,7 +7240,7 @@ class ActionHandler:
         guild = message.guild
         member = message.author
         staff_promo = self.bot.staff_promo
-        promotion_service = self.bot.promotion_service
+        promotion_service = self.bot.staff_promo.promotion_service
 
         config = staff_promo._get_full_config(guild.id)
         metrics = config.get("metrics", staff_promo._default_metrics)
@@ -8860,7 +8912,7 @@ class ActionHandler:
     async def handle_list_events(self, message: discord.Message) -> bool:
         """Handle !events command - List scheduled events"""
         try:
-            events = self.bot.events
+            events = self.bot.event_scheduler
             guild_id = message.guild.id
 
             # Get scheduled events from the module
@@ -9097,7 +9149,7 @@ class ActionHandler:
     async def handle_shift_start(self, message: discord.Message) -> bool:
         """Handle !shift start command"""
         try:
-            staff_shift = self.bot.staff_shift
+            staff_shift = self.bot.staff_shifts
             guild_id = message.guild.id
             user_id = message.author.id
             

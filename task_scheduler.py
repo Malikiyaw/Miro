@@ -136,3 +136,8 @@ class TaskScheduler:
     def load_tasks(self, saved_tasks: List[dict]):
         """Load scheduled tasks from saved data."""
         logger.info(f"load_tasks called with {len(saved_tasks)} tasks - task loading monitored")
+
+# Shared scheduler instance. MiroBot attaches this same object as
+# bot.task_scheduler so reminders/giveaways (which import this singleton)
+# and bot-side restores all use one queue.
+task_scheduler = TaskScheduler(None)

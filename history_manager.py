@@ -86,18 +86,9 @@ class HistoryManager:
                     summary_parts.append(f"{role}: {content}")
                 
                 summary_text = " | ".join(summary_parts)
-                
-                start_timestamp = exchanges_to_summarize[0]["timestamp"] if exchanges_to_summarize else time.time()
-                end_timestamp = exchanges_to_summarize[-1]["timestamp"] if exchanges_to_summarize else time.time()
-                
-                await dm.save_conversation_summary(
-                    guild_id, user_id, 
-                    start_timestamp,
-                    end_timestamp,
-                    summary_text, 
-                    len(exchanges_to_summarize)
-                )
-                
+
+                await dm.save_conversation_summary(guild_id, user_id, summary_text)
+
                 return True
             else:
                 history = dm.load_json(self.history_file, default={})
@@ -173,7 +164,7 @@ class HistoryManager:
         if summaries:
             summary_parts = []
             for s in summaries[-5:]:
-                summary_parts.append(s["summary_text"])
+                summary_parts.append(s["summary"])
             combined_summary = "\nPrevious conversation summary:\n" + "\n".join(summary_parts)
             formatted_exchanges.append({
                 "role": "system",
