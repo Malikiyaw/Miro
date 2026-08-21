@@ -1,0 +1,3 @@
+2026-08-21 21:06:30,598 - MiroBot - ERROR - error:96 - Event handler boom failed on message.created: main.<locals>.boom() takes 0 positional arguments but 1 was given
+2026-08-21 21:07:03,927 - MiroBot - ERROR - error:96 - Job 1 (slow) failed permanently after 2 attempts: 
+2026-08-21 21:07:31,796 - MiroBot - ERROR - error:96 - Job 1 (slow) failed permanently after 2 attempts: 

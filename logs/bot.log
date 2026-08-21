@@ -1,0 +1,40 @@
+2026-08-21 21:06:30,598 - MiroBot - ERROR - error:96 - Event handler boom failed on message.created: main.<locals>.boom() takes 0 positional arguments but 1 was given
+2026-08-21 21:06:30,599 - MiroBot - WARNING - warning:92 - Rate limiter: GLOBAL EMERGENCY mode engaged
+2026-08-21 21:06:30,599 - MiroBot - INFO - info:88 - Rate limiter: emergency mode cleared
+2026-08-21 21:06:30,599 - MiroBot - WARNING - warning:92 - Health: bad_sub is UNKNOWN (1 failures) 
+2026-08-21 21:06:30,599 - MiroBot - WARNING - warning:92 - Health: bad_sub is DEGRADED (2 failures) 
+2026-08-21 21:06:30,599 - MiroBot - WARNING - warning:92 - Health: bad_sub is OFFLINE (3 failures) 
+2026-08-21 21:06:30,599 - MiroBot - WARNING - warning:92 - Health: bad_sub is OFFLINE (4 failures) 
+2026-08-21 21:06:30,600 - MiroBot - INFO - info:88 - Task scheduler started
+2026-08-21 21:06:30,600 - MiroBot - DEBUG - debug:84 - Scheduled job 0 (flaky) for 1787346390.6101093
+2026-08-21 21:06:30,700 - MiroBot - DEBUG - debug:84 - Executing scheduled task 0: _run_job
+2026-08-21 21:06:30,700 - MiroBot - WARNING - warning:92 - Job 0 attempt 1/5 failed: transient; retrying in 5s
+2026-08-21 21:07:02,674 - MiroBot - INFO - info:88 - Task scheduler started
+2026-08-21 21:07:02,674 - MiroBot - DEBUG - debug:84 - Scheduled job 0 (flaky) for 1787346422.6844668
+2026-08-21 21:07:02,775 - MiroBot - DEBUG - debug:84 - Executing scheduled task 0: _run_job
+2026-08-21 21:07:02,775 - MiroBot - WARNING - warning:92 - Job 0 attempt 1/5 failed: transient; retrying in 0s
+2026-08-21 21:07:02,826 - MiroBot - WARNING - warning:92 - Job 0 attempt 2/5 failed: transient; retrying in 0s
+2026-08-21 21:07:02,927 - MiroBot - DEBUG - debug:84 - Job 0 succeeded
+2026-08-21 21:07:02,927 - MiroBot - DEBUG - debug:84 - Completed scheduled task 0
+2026-08-21 21:07:03,676 - MiroBot - DEBUG - debug:84 - Scheduled job 1 (slow) for 1787346423.6863022
+2026-08-21 21:07:03,776 - MiroBot - DEBUG - debug:84 - Executing scheduled task 1: _run_job
+2026-08-21 21:07:03,826 - MiroBot - WARNING - warning:92 - Job 1 attempt 1/2 failed: ; retrying in 0s
+2026-08-21 21:07:03,927 - MiroBot - ERROR - error:96 - Job 1 (slow) failed permanently after 2 attempts: 
+2026-08-21 21:07:03,928 - MiroBot - DEBUG - debug:84 - Completed scheduled task 1
+2026-08-21 21:07:04,278 - MiroBot - DEBUG - debug:84 - Scheduled task 2 for 1787346424.2887459
+2026-08-21 21:07:31,542 - MiroBot - INFO - info:88 - Task scheduler started
+2026-08-21 21:07:31,542 - MiroBot - DEBUG - debug:84 - Scheduled job 0 (flaky) for 1787346451.5525951
+2026-08-21 21:07:31,542 - MiroBot - DEBUG - debug:84 - Scheduled job 1 (slow) for 1787346451.552679
+2026-08-21 21:07:31,542 - MiroBot - DEBUG - debug:84 - Scheduled task 2 for 1787346451.552731
+2026-08-21 21:07:31,643 - MiroBot - DEBUG - debug:84 - Executing scheduled task 0: _run_job
+2026-08-21 21:07:31,643 - MiroBot - WARNING - warning:92 - Job 0 attempt 1/5 failed: transient; retrying in 0s
+2026-08-21 21:07:31,643 - MiroBot - DEBUG - debug:84 - Executing scheduled task 1: _run_job
+2026-08-21 21:07:31,643 - MiroBot - DEBUG - debug:84 - Executing scheduled task 2: legacy
+2026-08-21 21:07:31,644 - MiroBot - DEBUG - debug:84 - Completed scheduled task 2
+2026-08-21 21:07:31,694 - MiroBot - WARNING - warning:92 - Job 0 attempt 2/5 failed: transient; retrying in 0s
+2026-08-21 21:07:31,695 - MiroBot - WARNING - warning:92 - Job 1 attempt 1/2 failed: ; retrying in 0s
+2026-08-21 21:07:31,795 - MiroBot - DEBUG - debug:84 - Job 0 succeeded
+2026-08-21 21:07:31,796 - MiroBot - DEBUG - debug:84 - Completed scheduled task 0
+2026-08-21 21:07:31,796 - MiroBot - ERROR - error:96 - Job 1 (slow) failed permanently after 2 attempts: 
+2026-08-21 21:07:31,796 - MiroBot - DEBUG - debug:84 - Completed scheduled task 1
+2026-08-21 21:07:34,544 - MiroBot - INFO - info:88 - Task scheduler stopped
