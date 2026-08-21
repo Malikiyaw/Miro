@@ -1,128 +1,369 @@
 import os
+import difflib
 import discord
 from discord import app_commands
 from discord.ext import commands
 import logging
+import aiohttp
 from data_manager import dm
-from typing import List
+from ai_providers import AIProviderRegistry
+from typing import List, Optional
 import time
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
+
 class CoreCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.providers = AIProviderRegistry()
 
-    # Model lists for each provider - Real models only
-    COMMON_MODELS = [
-        "llama-3.3-70b-versatile", "llama-3.3-8b-instant",
-        "llama-3.2-1b-preview", "llama-3.2-3b-preview", "llama-3.2-11b-vision-preview", "llama-3.2-90b-vision-preview",
-        "llama-3.1-8b-instant", "llama-guard-3-8b", "whisper-large-v3-turbo", "whisper-large-v3",
-        "gemma2-9b-it", "gemma-7b-it", "mixtral-8x7b-32768",
-        "qwen-2.5-coder-32b-instruct", "qwen-2.5-32b-instruct", "qwen-2.5-72b-instruct",
-        "mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "codestral-latest",
-        "deepseek-v3", "deepseek-r1",
-        "gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash",
-        "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo",
-        "claude-3-5-sonnet-20240620", "claude-3-opus-20240229"
+    # ------------------------------------------------------------------
+    # AI config helpers
+    # ------------------------------------------------------------------
+
+    PROVIDER_CHOICES = [
+        app_commands.Choice(name="🌐 OpenRouter (Universal)", value="openrouter"),
+        app_commands.Choice(name="🤖 OpenAI", value="openai"),
+        app_commands.Choice(name="✨ Google Gemini", value="gemini"),
+        app_commands.Choice(name="🧠 Anthropic Claude", value="anthropic"),
+        app_commands.Choice(name="⚡ Groq (Ultra-Fast)", value="groq"),
+        app_commands.Choice(name="🌬️ Mistral AI", value="mistral"),
+        app_commands.Choice(name="🐋 DeepSeek", value="deepseek"),
+        app_commands.Choice(name="🧭 Alibaba DashScope (Qwen)", value="dashscope"),
+        app_commands.Choice(name="🧮 Cerebras", value="cerebras"),
+        app_commands.Choice(name="🔺 SambaNova", value="sambanova"),
+        app_commands.Choice(name="🤝 Together AI", value="together"),
     ]
-    
-    MODEL_CHOICES = {
-        "openrouter": ["openai/gpt-4o", "anthropic/claude-3-5-sonnet", "google/gemini-2.0-flash", "meta-llama/llama-3.3-70b"],
-        "openai": ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"],
-        "gemini": ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash"],
-        "groq": ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"],
-        "mistral": ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "codestral-latest"],
-        "deepseek": ["deepseek-chat", "deepseek-coder"],
-        "anthropic": ["claude-3-5-sonnet-20240620", "claude-3-opus-20240229"],
-        "dashscope": ["qwen-turbo", "qwen-plus", "qwen-max"]
-    }
-    
-    def get_default_model(self, provider: str) -> str:
-        """Get the default model for a provider"""
-        defaults = {
-            "openrouter": "openai/gpt-4o",
-            "openai": "gpt-4o",
-            "gemini": "gemini-1.5-flash",
-            "groq": "llama-3.3-70b-versatile",
-            "mistral": "mistral-small-latest",
-            "deepseek": "deepseek-chat",
-            "anthropic": "claude-3-5-sonnet-20240620",
-            "dashscope": "qwen-turbo"
-        }
-        return defaults.get(provider, "gpt-4o-mini")
+
+    def _active_provider(self, guild_id: int) -> str:
+        """The provider requests will actually use (mirrors AIClient resolution:
+        /config provider choice > key-store marker > env default)."""
+        stored = dm.get_guild_api_key(guild_id) or {}
+        return (
+            dm.get_guild_data(guild_id, "active_provider")
+            or stored.get("provider")
+            or (getattr(self.bot.ai, "default_provider", None) if self.bot.ai else None)
+            or "openrouter"
+        )
+
+    def _active_model(self, guild_id: int) -> str:
+        custom = dm.get_guild_data(guild_id, "custom_model", None)
+        if custom:
+            return custom
+        env_model = os.getenv("AI_MODEL", "")
+        return env_model or self.providers.default_model(self._active_provider(guild_id))
+
+    def _provider_key(self, guild_id: int, provider: str) -> Optional[str]:
+        """Key that would be used for a provider: guild-stored first, env fallback second."""
+        entry = dm.get_guild_api_key(guild_id, provider=provider)
+        if isinstance(entry, dict) and entry.get("api_key"):
+            return entry["api_key"]
+        if provider == getattr(self.bot.ai, "default_provider", None):
+            key = getattr(self.bot.ai, "default_api_key", "")
+            if key and len(key) > 10:
+                return key
+        return None
+
+    async def _known_models(self, guild_id: int, provider: str) -> List[str]:
+        """Live model list from the provider when possible, curated list otherwise."""
+        key = self._provider_key(guild_id, provider)
+        if key:
+            live = await self.providers.list_models(provider, key)
+            if live:
+                return live
+        return self.providers.curated_models(provider)
+
+    @staticmethod
+    def _admin_check(interaction: discord.Interaction) -> bool:
+        return bool(interaction.user.guild_permissions.administrator or
+                    interaction.user.id == interaction.guild.owner_id)
+
+    # ------------------------------------------------------------------
+    # /config provider
+    # ------------------------------------------------------------------
 
     config = app_commands.Group(name="config", description="Configure bot settings")
 
     async def config_model_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
-        """Autocomplete for model selection based on active provider"""
-        # Get the guild's active provider
-        current_config = dm.get_guild_api_key(interaction.guild.id) if interaction.guild else None
-        provider = current_config.get("provider", "openrouter") if current_config else "openrouter"
+        """Autocomplete for model selection: live models from the active
+        provider when available, curated fallback list otherwise."""
+        if not interaction.guild:
+            return []
+        guild_id = interaction.guild.id
+        provider = self._active_provider(guild_id)
+        try:
+            available_models = await self._known_models(guild_id, provider)
+        except Exception:
+            available_models = self.providers.curated_models(provider)
 
-        # Get models for this provider
-        available_models = self.MODEL_CHOICES.get(provider, self.COMMON_MODELS)
+        filtered = [m for m in available_models if current.lower() in m.lower()]
+        if not filtered and current:
+            filtered = available_models[:25]
+        return [app_commands.Choice(name=m[:100], value=m) for m in filtered[:25]]
 
-        # Filter models based on current input
-        filtered_models = [m for m in available_models if current.lower() in m.lower()]
-
-        # Return up to 25 choices
-        return [app_commands.Choice(name=model, value=model) for model in filtered_models[:25]]
-
-    @config.command(name="model", description="Set the AI model")
-    @app_commands.describe(model="Model name (e.g. gpt-4, claude-3)")
+    @config.command(name="model", description="Set the AI model used for this server")
+    @app_commands.describe(
+        model="Model name (use autocomplete — fetched live from your provider)",
+        force="Accept the model without validating it against the provider",
+    )
     @app_commands.autocomplete(model=config_model_autocomplete)
-    async def config_model(self, interaction: discord.Interaction, model: str):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("Only Administrators can change configuration.", ephemeral=True)
+    async def config_model(self, interaction: discord.Interaction, model: str, force: Optional[bool] = False):
+        await interaction.response.defer(ephemeral=True)
+        if not self._admin_check(interaction):
+            await interaction.followup.send("❌ Only Administrators can change configuration.", ephemeral=True)
             return
+
+        model = model.strip()
+        provider = self._active_provider(interaction.guild.id)
+
+        if not force:
+            known = await self._known_models(interaction.guild.id, provider)
+            if known and model not in known:
+                suggestions = difflib.get_close_matches(model, known, n=4, cutoff=0.25)
+                msg = f"❌ `{model}` is not in {self.providers.display(provider)}'s model list."
+                if suggestions:
+                    msg += "\nDid you mean: " + ", ".join(f"`{s}`" for s in suggestions) + "?"
+                msg += f"\nUse `force:True` to set it anyway (custom/finetuned models)."
+                await interaction.followup.send(msg, ephemeral=True)
+                return
 
         dm.update_guild_data(interaction.guild.id, "custom_model", model)
-        await interaction.response.send_message(f"✅ AI model set to **{model}** for this server.", ephemeral=True)
+        embed = discord.Embed(
+            title="✅ Model updated",
+            description=f"**{self.providers.display(provider)}** will now use `{model}`.",
+            color=discord.Color.green(),
+        )
+        key = self._provider_key(interaction.guild.id, provider)
+        if not key:
+            embed.set_footer(text=f"⚠️ No API key stored for {provider} — use /config key")
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @config.command(name="provider", description="Set the active AI provider")
-    @app_commands.choices(provider=[
-        app_commands.Choice(name="OpenRouter (Universal)", value="openrouter"),
-        app_commands.Choice(name="OpenAI", value="openai"),
-        app_commands.Choice(name="Google Gemini", value="gemini"),
-        app_commands.Choice(name="Groq (Ultra-Fast)", value="groq"),
-        app_commands.Choice(name="Mistral AI", value="mistral"),
-        app_commands.Choice(name="DeepSeek", value="deepseek"),
-        app_commands.Choice(name="Anthropic", value="anthropic"),
-        app_commands.Choice(name="Alibaba DashScope (Qwen)", value="dashscope")
-    ])
+    @config.command(name="provider", description="Set the active AI provider for this server")
+    @app_commands.choices(provider=PROVIDER_CHOICES)
+    @app_commands.describe(provider="Which AI provider to route requests through")
     async def config_provider(self, interaction: discord.Interaction, provider: str):
         await interaction.response.defer(ephemeral=True)
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.followup.send("Only Administrators can change configuration.", ephemeral=True)
+        if not self._admin_check(interaction):
+            await interaction.followup.send("❌ Only Administrators can change configuration.", ephemeral=True)
             return
-        dm.update_guild_data(interaction.guild.id, "active_provider", provider)
-        # Reset custom_model to provider's default
-        default_model = self.get_default_model(provider)
-        dm.update_guild_data(interaction.guild.id, "custom_model", default_model)
-        await interaction.followup.send(f"✅ AI provider switched to **{provider}** and model reset to **{default_model}**.", ephemeral=True)
+        if not self.providers.exists(provider):
+            await interaction.followup.send(f"❌ Unknown provider `{provider}`.", ephemeral=True)
+            return
 
-    @config.command(name="key", description="Set your own API key for a specific provider")
-    @app_commands.choices(provider=[
-        app_commands.Choice(name="OpenRouter", value="openrouter"),
-        app_commands.Choice(name="OpenAI", value="openai"),
-        app_commands.Choice(name="Gemini", value="gemini"),
-        app_commands.Choice(name="Groq", value="groq"),
-        app_commands.Choice(name="Mistral", value="mistral"),
-        app_commands.Choice(name="DeepSeek", value="deepseek"),
-        app_commands.Choice(name="Anthropic", value="anthropic"),
-        app_commands.Choice(name="Alibaba DashScope (Qwen)", value="dashscope")
-    ])
-    @app_commands.describe(api_key="Your API key for this provider")
+        guild_id = interaction.guild.id
+        previous = self._active_provider(guild_id)
+        dm.update_guild_data(guild_id, "active_provider", provider)
+
+        # Keep the current model if it looks compatible with the new provider;
+        # otherwise reset to that provider's default model.
+        current_model = self._active_model(guild_id)
+        curated = [m.lower() for m in self.providers.curated_models(provider)]
+
+        def model_compatible(current: str, provider_models: List[str]) -> bool:
+            if not provider_models:
+                return True
+            cur = current.lower()
+            for pm in provider_models:
+                tokens = [t for t in pm.replace("/", ".").replace("_", ".").replace("-", ".").split(".")
+                          if len(t) >= 3 and not t.isdigit()]
+                if any(tok in cur for tok in tokens):
+                    return True
+            return False
+
+        if model_compatible(current_model, curated):
+            model_note = f"Kept current model: `{current_model}`"
+        else:
+            default_model = self.providers.default_model(provider)
+            dm.update_guild_data(guild_id, "custom_model", default_model)
+            model_note = f"Model set to the {provider} default: `{default_model}` (previous `{current_model}` wasn't valid on {provider})"
+
+        key = self._provider_key(guild_id, provider)
+        embed = discord.Embed(
+            title=f"{self.providers.display(provider)} is now active",
+            color=discord.Color.green() if key else discord.Color.orange(),
+        )
+        embed.add_field(name="Routing", value=f"~~{previous}~~ → **{provider}**", inline=False)
+        embed.add_field(name="Model", value=model_note, inline=False)
+        if key:
+            embed.add_field(name="API Key", value=f"✅ Using stored/env key {AIProviderRegistry.mask_key(key)}", inline=False)
+        else:
+            signup = self.providers.key_signup_url(provider)
+            embed.add_field(
+                name="⚠️ No API key for this provider",
+                value=f"Set one with `/config key` ([get a key]({signup})). "
+                      f"Requests will fall back to other configured keys until then.",
+                inline=False,
+            )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @config.command(name="key", description="Store your own API key for a provider (encrypted + auto-tested)")
+    @app_commands.choices(provider=PROVIDER_CHOICES)
+    @app_commands.describe(
+        provider="Provider this key belongs to",
+        api_key="Paste the secret API key — it is encrypted at rest and never shown again",
+    )
     async def config_key(self, interaction: discord.Interaction, provider: str, api_key: str):
         await interaction.response.defer(ephemeral=True)
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.followup.send("Only Administrators can change configuration.", ephemeral=True)
+        if not self._admin_check(interaction):
+            await interaction.followup.send("❌ Only Administrators can change configuration.", ephemeral=True)
             return
-        
+        if not self.providers.exists(provider):
+            await interaction.followup.send(f"❌ Unknown provider `{provider}`.", ephemeral=True)
+            return
+
+        api_key = api_key.strip()
+        valid, reason = self.providers.validate_key_format(provider, api_key)
+        if not valid:
+            signup = self.providers.key_signup_url(provider)
+            await interaction.followup.send(
+                f"❌ {reason}\nGet a valid key here: <{signup}>",
+                ephemeral=True,
+            )
+            return
+
+        # Store encrypted BEFORE testing so the key is saved even if the test hiccups
         dm.set_guild_api_key(interaction.guild.id, api_key, provider)
-        await interaction.followup.send(f"✅ API key for **{provider}** has been updated and encrypted.", ephemeral=True)
+        # Make sure requests route to the provider this key belongs to
+        dm.update_guild_data(interaction.guild.id, "active_provider", provider)
+
+        ok, detail, latency_ms = await self.providers.test_key(provider, api_key)
+        masked = AIProviderRegistry.mask_key(api_key)
+        if ok:
+            embed = discord.Embed(
+                title=f"✅ Key saved & verified — {self.providers.display(provider)}",
+                description=f"Key {masked} works ({detail}).",
+                color=discord.Color.green(),
+            )
+            embed.add_field(name="Latency", value=f"{latency_ms:.0f} ms", inline=True)
+            embed.add_field(name="Active model", value=f"`{self._active_model(interaction.guild.id)}`", inline=True)
+            embed.set_footer(text="This key is now the primary AI backend for this server.")
+        else:
+            embed = discord.Embed(
+                title=f"⚠️ Key saved but verification failed — {self.providers.display(provider)}",
+                description=f"Key {masked} was stored encrypted, but the provider said: *{detail}*.",
+                color=discord.Color.orange(),
+            )
+            embed.add_field(
+                name="What to do",
+                value=f"Double-check the key at <{self.providers.key_signup_url(provider)}> and re-run `/config key`, "
+                      f"or run `/config test` later. Other stored keys remain as automatic fallbacks.",
+                inline=False,
+            )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @config.command(name="clearkey", description="Remove a stored API key for this server")
+    @app_commands.choices(provider=PROVIDER_CHOICES)
+    @app_commands.describe(provider="Provider whose stored key should be removed")
+    async def config_clearkey(self, interaction: discord.Interaction, provider: str):
+        await interaction.response.defer(ephemeral=True)
+        if not self._admin_check(interaction):
+            await interaction.followup.send("❌ Only Administrators can change configuration.", ephemeral=True)
+            return
+
+        removed = dm.clear_guild_api_key(interaction.guild.id, provider)
+        if removed:
+            remaining = [
+                p for p in (dm.get_guild_api_key(interaction.guild.id) or {}).get("providers", {})
+                if self._provider_key(interaction.guild.id, p)
+            ]
+            note = f"Remaining keys: {', '.join(remaining)}" if remaining else "No other keys stored — the bot-wide env key will be used if present."
+            await interaction.followup.send(f"🗑️ Removed the stored **{provider}** key.\n{note}", ephemeral=True)
+        else:
+            await interaction.followup.send(f"ℹ️ No stored key found for **{provider}** on this server.", ephemeral=True)
+
+    @config.command(name="status", description="Show the full AI configuration for this server")
+    async def config_status(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild_id = interaction.guild.id
+        provider = self._active_provider(guild_id)
+        model = self._active_model(guild_id)
+
+        env_key = getattr(self.bot.ai, "default_api_key", "") if self.bot.ai else ""
+        embed = discord.Embed(title="⚙️ AI Configuration", color=discord.Color.blue())
+        embed.add_field(name="Active provider", value=self.providers.display(provider), inline=True)
+        embed.add_field(name="Model", value=f"`{model}`", inline=True)
+        embed.add_field(name="Memory depth", value=str(dm.get_guild_data(guild_id, "memory_depth", 20)), inline=True)
+
+        stored = dm.get_guild_api_key(guild_id) or {}
+        providers_cfg = stored.get("providers", {}) if isinstance(stored, dict) else {}
+        if providers_cfg:
+            lines = []
+            for pname, cfg in providers_cfg.items():
+                key = (cfg or {}).get("api_key")
+                marker = "🟢" if pname == provider else "⚪"
+                lines.append(f"{marker} {self.providers.display(pname)} — {AIProviderRegistry.mask_key(key) if key else '*(empty)*'}")
+            embed.add_field(name="Stored keys", value="\n".join(lines)[:1024], inline=False)
+        else:
+            embed.add_field(name="Stored keys", value="None — using bot-wide environment key", inline=False)
+
+        env_state = f"✅ configured ({getattr(self.bot.ai, 'default_provider', '?')})" if env_key else "❌ not set"
+        embed.add_field(name="Bot-wide env fallback", value=env_state, inline=False)
+        embed.set_footer(text="/config provider · /config model · /config key · /config test · /config clearkey")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @config.command(name="test", description="Send a live test request through the active AI configuration")
+    async def config_test(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not self._admin_check(interaction):
+            await interaction.followup.send("❌ Only Administrators can run tests.", ephemeral=True)
+            return
+
+        guild_id = interaction.guild.id
+        provider = self._active_provider(guild_id)
+        model = self._active_model(guild_id)
+        key = self._provider_key(guild_id, provider)
+
+        if not key:
+            await interaction.followup.send(
+                f"❌ No API key available for **{provider}**. Store one with `/config key` first.",
+                ephemeral=True,
+            )
+            return
+
+        registry = self.providers
+        chat_url = registry.chat_base_url(provider)
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": "Reply with exactly: MIRO ONLINE"}],
+            "max_tokens": 20,
+        }
+        started = time.perf_counter()
+        try:
+            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(chat_url, json=payload, headers=registry._auth_headers(provider, key)) as resp:
+                    latency = (time.perf_counter() - started) * 1000
+                    body = await resp.json(content_type=None)
+                    if resp.status == 200:
+                        text = (
+                            body.get("choices", [{}])[0].get("message", {}).get("content", "")
+                            or body.get("content", [{}])[0].get("text", "")
+                        ).strip()
+                        embed = discord.Embed(title="🧪 Live test passed", color=discord.Color.green())
+                        embed.add_field(name="Route", value=f"{registry.display(provider)} · `{model}`", inline=False)
+                        embed.add_field(name="Latency", value=f"{latency:.0f} ms", inline=True)
+                        embed.add_field(name="Response", value=(text or "*(empty response)*")[:500], inline=True)
+                    else:
+                        err = str(body.get("error", {}).get("message", ""))[:300] if isinstance(body, dict) else ""
+                        embed = discord.Embed(title="🧪 Live test failed", color=discord.Color.red())
+                        embed.add_field(name="Route", value=f"{registry.display(provider)} · `{model}`", inline=False)
+                        embed.add_field(name="HTTP status", value=str(resp.status), inline=True)
+                        embed.add_field(name="Error", value=err or "unknown error", inline=False)
+                        if resp.status in (401, 403):
+                            embed.add_field(name="Likely cause", value="Invalid/expired API key — re-set it with `/config key`.", inline=False)
+                        elif resp.status == 404 or "model" in err.lower():
+                            embed.add_field(name="Likely cause", value="Unknown model for this provider — pick one from `/config model` autocomplete.", inline=False)
+                        elif resp.status == 429:
+                            embed.add_field(name="Likely cause", value="Rate limit / quota exhausted on this key.", inline=False)
+        except Exception as e:
+            latency = (time.perf_counter() - started) * 1000
+            embed = discord.Embed(title="🧪 Live test failed", color=discord.Color.red())
+            embed.add_field(name="Route", value=f"{registry.display(provider)} · `{model}`", inline=False)
+            embed.add_field(name="Error", value=f"Connection failed after {latency:.0f} ms:\n{str(e)[:300]}", inline=False)
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @config.command(name="prefix", description="Set the server command prefix")
     @app_commands.describe(prefix="New prefix character (max 5 chars)")

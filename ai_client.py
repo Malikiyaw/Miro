@@ -63,20 +63,33 @@ class AIClient:
         }
 
     def _get_guild_api_key(self, guild_id: int) -> tuple:
-        """Get API key and provider for a specific guild, fallback to defaults"""
+        """Get API key and provider for a specific guild, fallback to defaults.
+
+        Resolution order for the provider:
+        1. /config provider selection ("active_provider" in guild data — the
+           admin's most recent explicit choice)
+        2. provider stored alongside the guild's API keys ("provider" key)
+        3. bot-wide default provider
+        """
         from data_manager import dm
-        # Get active provider for the guild
         current_config = dm.get_guild_api_key(guild_id)
-        if current_config:
-            return current_config.get("api_key", self.default_api_key), current_config.get("provider", self.default_provider)
-        return self.default_api_key, self.default_provider
+        active_provider = dm.get_guild_data(guild_id, "active_provider", None)
+        stored_provider = current_config.get("provider") if current_config else None
+        provider = active_provider or stored_provider or self.default_provider
+
+        # Prefer a key stored for the active provider
+        if current_config and provider:
+            stored = current_config.get("providers", {}).get(provider)
+            if isinstance(stored, dict) and stored.get("api_key"):
+                return stored.get("api_key"), provider
+        return self.default_api_key, provider
 
     def _get_all_guild_keys(self, guild_id: int) -> List[Dict[str, str]]:
         """Fetch all available API keys for a guild to use as fallbacks"""
         from data_manager import dm
         api_keys = dm.load_json("guild_api_keys", default={})
         guild_data = api_keys.get(str(guild_id), {})
-        
+
         def is_valid_key(k):
             return k and len(k) > 10 and not any(x in k.upper() for x in ["YOUR_", "REPLACE_"])
 
@@ -85,21 +98,22 @@ class AIClient:
         primary = self._get_guild_api_key(guild_id)
         if is_valid_key(primary[0]):
             results.append({"api_key": primary[0], "provider": primary[1]})
-        
-        # Add others if available
+
+        # Add other stored keys as fallbacks (active provider first)
         providers = guild_data.get("providers", {})
         if isinstance(providers, dict):
-            for p, enc_key in providers.items():
+            ordered = sorted(providers.keys(), key=lambda p: p != primary[1])
+            for p in ordered:
                 if p != primary[1]:
                     # Decrypt and add
                     res = dm.get_guild_api_key(guild_id, provider=p)
-                    if res and is_valid_key(res.get("api_key")):
-                        results.append(res)
-        
+                    if isinstance(res, dict) and res.get("api_key") and is_valid_key(res.get("api_key")):
+                        results.append({"api_key": res["api_key"], "provider": p})
+
         # Finally add defaults if not already present and valid
         if is_valid_key(self.default_api_key) and not any(r["provider"] == self.default_provider for r in results):
             results.append({"api_key": self.default_api_key, "provider": self.default_provider})
-            
+
         return results
     
     async def fetch_server_health(self, guild_id: int) -> Dict[str, Any]:

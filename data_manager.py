@@ -49,10 +49,11 @@ class DataManager:
             with open(key_file, "rb") as f:
                 self.cipher = Fernet(f.read())
         else:
-            self.cipher = Fernet.generate_key()
+            generated = Fernet.generate_key()
             with open(key_file, "wb") as f:
-                f.write(self.cipher)
+                f.write(generated)
             os.chmod(key_file, 0o600)
+            self.cipher = Fernet(generated)
 
     def _init_sqlite(self):
         """Initialize SQLite database for conversation history."""
@@ -234,8 +235,25 @@ class DataManager:
             del data[key]
             self.save_json(guild_file, data)
 
+    def _decrypt_key_entry(self, entry):
+        """Return a shallow copy of a key-entry dict with 'api_key' decrypted."""
+        if not isinstance(entry, dict):
+            return entry
+        out = dict(entry)
+        enc = out.get("api_key")
+        if isinstance(enc, str) and enc:
+            decrypted = self._decrypt_data(enc)
+            if decrypted:
+                out["api_key"] = decrypted
+            elif len(enc) < 60:
+                # Value was likely stored unencrypted by older versions
+                out["api_key"] = enc
+            else:
+                out.pop("api_key", None)
+        return out
+
     def get_guild_api_key(self, guild_id: int, provider: str = None) -> Optional[Dict]:
-        """Get API key configuration for a specific guild."""
+        """Get API key configuration for a specific guild (api_key values are decrypted)."""
         api_keys = self.load_json("guild_api_keys", default={})
         if not isinstance(api_keys, dict):
             api_keys = {}
@@ -243,8 +261,13 @@ class DataManager:
         if not isinstance(guild_data, dict):
             guild_data = {}
         if provider:
-            return guild_data.get("providers", {}).get(provider)
-        return guild_data
+            return self._decrypt_key_entry(guild_data.get("providers", {}).get(provider))
+        out = dict(guild_data)
+        if isinstance(out.get("providers"), dict):
+            out["providers"] = {
+                p: self._decrypt_key_entry(cfg) for p, cfg in out["providers"].items()
+            }
+        return out
 
     def update_guild_api_key(self, guild_id: int, provider: str, config: Dict):
         """Update API key configuration for a specific guild and provider."""
@@ -258,6 +281,39 @@ class DataManager:
         api_keys[str(guild_id)]["providers"][provider] = config
         self.save_json("guild_api_keys", api_keys)
         self._cache["guild_api_keys"] = api_keys
+
+    def set_guild_api_key(self, guild_id: int, api_key: str, provider: str):
+        """Encrypt, store, and activate an API key for a guild and provider."""
+        encrypted = self._encrypt_data(api_key)
+        self.update_guild_api_key(guild_id, provider, {
+            "api_key": encrypted,
+            "provider": provider,
+            "updated_at": time.time(),
+        })
+        # Mark the provider active so AIClient routes requests to it
+        api_keys = self.load_json("guild_api_keys", default={})
+        if isinstance(api_keys.get(str(guild_id)), dict):
+            api_keys[str(guild_id)]["provider"] = provider
+            self.save_json("guild_api_keys", api_keys)
+            self._cache["guild_api_keys"] = api_keys
+
+    def clear_guild_api_key(self, guild_id: int, provider: str) -> bool:
+        """Remove a stored key for a provider. Returns True if something was removed."""
+        api_keys = self.load_json("guild_api_keys", default={})
+        guild_data = api_keys.get(str(guild_id))
+        if not isinstance(guild_data, dict):
+            return False
+        removed = False
+        providers = guild_data.get("providers", {})
+        if provider in providers:
+            del providers[provider]
+            removed = True
+        if guild_data.get("provider") == provider:
+            guild_data["provider"] = None
+        if removed or guild_data.get("provider", "missing") is None:
+            self.save_json("guild_api_keys", api_keys)
+            self._cache["guild_api_keys"] = api_keys
+        return removed
 
     async def save_exchange(self, guild_id: int, user_id: int, role: str, content: str, importance_score: float = 0.5):
         """Save conversation exchange to SQLite."""
