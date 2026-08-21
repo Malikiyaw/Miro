@@ -151,8 +151,8 @@ class MiroBot(commands.Bot):
             except Exception as e:
                 logger.error(f"Failed to load cog {cog}: {e}")
 
-        # Sync slash commands when enabled
-        if os.getenv("SYNC_COMMANDS", "false").lower() in ("true", "1", "yes"):
+        # Sync slash commands on startup (opt out with SYNC_COMMANDS=false)
+        if os.getenv("SYNC_COMMANDS", "true").lower() not in ("false", "0", "no"):
             try:
                 synced = await self.tree.sync()
                 logger.info(f"Synced {len(synced)} slash commands")
@@ -266,7 +266,9 @@ class MiroBot(commands.Bot):
         health.register("gateway", lambda: self.is_ready())
         health.register("scheduler", lambda: getattr(self.task_scheduler, "_running", False))
         health.register("database", self._check_database)
-        health.register("ai_client", lambda: bool(os.getenv("AI_API_KEY")))
+        # Based on real request outcomes (AIClient.report_success/report_failure),
+        # so it auto-recovers once API errors stop; never flags "not configured".
+        health.register("ai_client", lambda: getattr(self.ai, "consecutive_failures", 0) < 5)
         health.register("event_bus", lambda: True)
 
     @staticmethod

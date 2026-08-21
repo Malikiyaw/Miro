@@ -4,6 +4,7 @@ import aiohttp
 import logging
 import re
 import asyncio
+import time
 from typing import List, Dict, Any, Optional
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception, retry_if_not_exception_type
 from history_manager import history_manager
@@ -61,6 +62,9 @@ class AIClient:
             "sambanova": os.getenv("SAMBANOVA_URL", "https://api.sambanova.ai/v1/chat/completions"),
             "together": os.getenv("TOGETHER_URL", "https://api.together.xyz/v1/chat/completions")
         }
+        # Health-watchdog signals (consumed by core/health via bot.py)
+        self.consecutive_failures = 0
+        self.last_success_ts = 0.0
 
     def _get_guild_api_key(self, guild_id: int) -> tuple:
         """Get API key and provider for a specific guild, fallback to defaults.
@@ -412,6 +416,35 @@ Only suggest actions from this list. Do not invent new actions:
         # Fallback to original input if enhancement fails
         return user_input
 
+    def _coerce_model_for_provider(self, guild_id: int, provider: str) -> Optional[str]:
+        """
+        Return the guild's custom model only when it is compatible with the
+        given provider; otherwise the provider's default model. Prevents the
+        classic fallback failure of sending a Mistral model name to Groq.
+        """
+        from data_manager import dm
+        try:
+            from ai_providers import AIProviderRegistry
+        except ImportError:
+            return None
+
+        registry = AIProviderRegistry()
+        custom = dm.get_guild_data(guild_id, "custom_model", None)
+        if not custom:
+            return None
+        curated = [m.lower() for m in registry.curated_models(provider)]
+        if not curated:
+            return custom  # unknown provider shape; let the API decide
+        low = custom.lower()
+        for pm in curated:
+            tokens = [t for t in pm.replace("/", ".").replace("_", ".").replace("-", ".").split(".")
+                      if len(t) >= 3 and not t.isdigit()]
+            if any(tok in low for tok in tokens):
+                return custom
+        logger.info(f"Model '{custom}' incompatible with {provider}; using default "
+                    f"'{registry.default_model(provider)}' instead")
+        return registry.default_model(provider)
+
     async def chat(self, guild_id: int, user_id: int, user_input: str, system_prompt: str) -> Dict[str, Any]:
         """
         Communicates with the LLM using a primary provider, with automatic fallback
@@ -426,28 +459,56 @@ Only suggest actions from this list. Do not invent new actions:
             return {"error": "No valid API key configured. Use /config apikey to set one."}
 
         last_error = None
+        consecutive_429 = 0
 
         for key_bundle in keys_to_try:
             api_key = key_bundle["api_key"]
             provider = key_bundle["provider"]
             
+            # Back off between rate-limited attempts so we don't burn the whole chain at once
+            if consecutive_429:
+                wait = min(2 ** min(consecutive_429, 5), 30)
+                logger.warning(f"[AI BACKOFF] Rate limited {consecutive_429}x; waiting {wait}s before next attempt")
+                await asyncio.sleep(wait)
+
+            # Re-resolve the model for THIS provider (fallbacks must not reuse foreign models)
+            model_override = self._coerce_model_for_provider(guild_id, provider)
+
             try:
-                return await self._chat_internal(guild_id, user_id, user_input, system_prompt, api_key, provider, enhanced_input)
+                result = await self._chat_internal(guild_id, user_id, user_input, system_prompt,
+                                                   api_key, provider, enhanced_input,
+                                                   model_override=model_override)
+                self.report_success()
+                consecutive_429 = 0
+                return result
             except AIClientError as e:
                 # If it's a quota (429), access (403), or auth (401) error, try the next provider in the guild's list
                 if e.status in [401, 429, 403]:
                     logger.warning(f"[AI FALLBACK] Provider {provider} failed with {e.status}. Trying next available fallback...")
                     last_error = e
+                    if e.status == 429:
+                        consecutive_429 += 1
                     continue
+                self.report_failure()
                 raise # Re-raise server/connection errors for the 'tenacity' @retry to handle
             except Exception as e:
+                self.report_failure()
                 # Re-raise transient exceptions for tenacity to handle
                 raise
 
+        self.report_failure()
         if last_error:
             raise last_error
         
         raise Exception("AI failed to respond after trying all configured fallback providers.")
+
+    def report_success(self):
+        """Feed the health watchdog: a real successful request proves the client works."""
+        self.consecutive_failures = 0
+        self.last_success_ts = time.time()
+
+    def report_failure(self):
+        self.consecutive_failures = getattr(self, "consecutive_failures", 0) + 1
     
     async def generate_response(self, messages: List[Dict[str, str]], guild_id: int, user_id: int, max_tokens: int = 1000) -> str:
         """
@@ -580,7 +641,7 @@ Only suggest actions from this list. Do not invent new actions:
                 raise AIClientError(status, msg) from cause
             raise Exception(f'AI failed after multiple attempts: {cause}') from cause
 
-    async def _chat_internal(self, guild_id: int, user_id: int, user_input: str, system_prompt: str, api_key: str, provider: str, enhanced_input: str = None) -> Dict[str, Any]:
+    async def _chat_internal(self, guild_id: int, user_id: int, user_input: str, system_prompt: str, api_key: str, provider: str, enhanced_input: str = None, model_override: Optional[str] = None) -> Dict[str, Any]:
         """Internal execution for a single AI provider request."""
         # Validate guild context
         if guild_id is None:
@@ -627,7 +688,10 @@ Only suggest actions from this list. Do not invent new actions:
         
         # Determine model based on provider
         from data_manager import dm
-        active_model = dm.get_guild_data(guild_id, "custom_model", self.model)
+        if model_override:
+            active_model = model_override
+        else:
+            active_model = dm.get_guild_data(guild_id, "custom_model", self.model)
         
         if provider == "gemini" and (not active_model or "gpt" in active_model.lower()):
             active_model = "gemini-1.5-flash-latest"
@@ -864,12 +928,14 @@ Only suggest actions from this list. Do not invent new actions:
             except json.JSONDecodeError:
                 pass
                 
-        # Final desperate attempt: find first { and last } manually
+        # Final desperate attempt: find first { and last } manually.
+        # Responses truncated before ANY closing brace still get repaired
+        # (_repair_json closes open strings/brackets/braces).
         try:
             start = text.find('{')
-            end = text.rfind('}')
-            if start != -1 and end != -1:
-                content = text[start:end+1]
+            if start != -1:
+                end = text.rfind('}')
+                content = text[start:] if end < start else text[start:end+1]
                 content = self._repair_json(content)
                 parsed = json.loads(content)
                 if self._validate_json_response(parsed):
@@ -905,47 +971,73 @@ Only suggest actions from this list. Do not invent new actions:
             
         content = re.sub(r'"([^"]+)":\s*"((?:[^"\\]|\\.)*)"', escape_quotes_in_strings, content)
         
-        # Ensure balanced braces - add missing closing braces if needed
-        open_braces = content.count('{')
-        close_braces = content.count('}')
-        if open_braces > close_braces:
-            content += '}' * (open_braces - close_braces)
-            
-        # Ensure balanced brackets
-        open_brackets = content.count('[')
-        close_brackets = content.count(']')
-        if open_brackets > close_brackets:
-            content += ']' * (open_brackets - close_brackets)
+        # Structure-aware repair: close unterminated strings and any open
+        # brackets/braces left by a truncated response (in the right order).
+        content = self._close_open_structures(content)
             
         return content
+
+    @staticmethod
+    def _close_open_structures(content: str) -> str:
+        """Scan for unclosed strings/brackets/braces and append the closers."""
+        stack = []
+        in_string = False
+        escaped = False
+        for ch in content:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch in "{[":
+                stack.append(ch)
+            elif ch == "}":
+                if stack and stack[-1] == "{":
+                    stack.pop()
+            elif ch == "]":
+                if stack and stack[-1] == "[":
+                    stack.pop()
+        closers = ""
+        if in_string:
+            closers += '"'
+        for open_ch in reversed(stack):
+            closers += "}" if open_ch == "{" else "]"
+        return content + closers
         
     def _validate_json_response(self, data: Any) -> bool:
-        """Validate that JSON response has correct structure and types."""
-        if not isinstance(data, dict):
+        """Validate that JSON response has correct structure and types.
+
+        Accepts any non-empty object (quest JSON, action plans, summaries...).
+        Only enforces type-correctness on fields it knows about.
+        """
+        if not isinstance(data, dict) or not data:
             return False
-            
-        # Summary is always required
-        if "summary" not in data or not isinstance(data["summary"], str):
+
+        # Type-check known optional fields when present
+        if "summary" in data and not isinstance(data["summary"], str):
             return False
-            
-        # Validate optional fields if present
+
         if "reasoning" in data and not isinstance(data["reasoning"], str):
             return False
             
         if "walkthrough" in data and not isinstance(data["walkthrough"], str):
             return False
             
-        if "actions" in data and not isinstance(data["actions"], list):
-            return False
-            
-        # Validate each action if present
         if "actions" in data:
+            if not isinstance(data["actions"], list):
+                return False
+            # Validate each action if present
             for action in data["actions"]:
                 if not isinstance(action, dict):
                     return False
                 if "name" not in action or "parameters" not in action:
                     return False
-                    
+                        
         return True
 
 # Default System Prompt

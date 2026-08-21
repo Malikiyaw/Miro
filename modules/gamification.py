@@ -154,13 +154,35 @@ class AdaptiveGamification:
                 ]
                 dm.update_guild_data(guild.id, "server_challenges", new_challenges)
 
+    FALLBACK_QUESTS = [
+        {"title": "Chatterbox", "description": "Send 10 messages in the server today!",
+         "requirements": {"type": "messages", "count": 10}, "rewards": {"coins": 50, "xp": 25}},
+        {"title": "Explorer", "description": "Use 3 different commands today.",
+         "requirements": {"type": "commands", "count": 3}, "rewards": {"coins": 40, "xp": 20}},
+        {"title": "Social Butterfly", "description": "Send 15 messages and earn your daily bonus.",
+         "requirements": {"type": "messages", "count": 15}, "rewards": {"coins": 60, "xp": 30}},
+        {"title": "Dedicated", "description": "Claim your daily reward and send 5 messages.",
+         "requirements": {"type": "messages", "count": 5}, "rewards": {"coins": 45, "xp": 25}},
+        {"title": "Community Voice", "description": "Spend 10 minutes in voice chat with the community.",
+         "requirements": {"type": "voice", "count": 10}, "rewards": {"coins": 70, "xp": 35}},
+        {"title": "Regular", "description": "Send 8 messages today to keep your streak alive.",
+         "requirements": {"type": "messages", "count": 8}, "rewards": {"coins": 50, "xp": 25}},
+    ]
+
     async def _refresh_daily_quests(self):
+        # Bound concurrency: quest generation hits the AI API, and generating for
+        # every member of every guild at once caused 429 storms and CPU spikes.
+        sem = asyncio.Semaphore(3)
         for guild in self.bot.guilds:
             for member in guild.members:
                 if member.bot:
                     continue
-                
-                await self._generate_daily_quest(guild.id, member.id)
+                # Only generate for members who have actually interacted with the bot
+                if not dm.get_guild_data(guild.id, f"user_{member.id}", {}):
+                    continue
+                async with sem:
+                    await self._generate_daily_quest(guild.id, member.id)
+                await asyncio.sleep(1)  # stagger requests to respect provider rate limits
 
     async def _generate_daily_quest(self, guild_id: int, user_id: int):
         # Skip AI quest generation silently if no API key is configured for this guild
@@ -183,7 +205,7 @@ class AdaptiveGamification:
 
 User interests: {', '.join(interests)}
 
-Respond with JSON only:
+Respond with EXACTLY ONE complete, valid JSON object and nothing else - no markdown, no code fences, no explanation. Include every field shown:
 {{
     "title": "Quest title",
     "description": "What the player needs to do",
@@ -193,20 +215,34 @@ Respond with JSON only:
     "duration_hours": 24
 }}
 
+The requirements.type must be one of: messages, commands, voice.
 Make it fun and varied. Consider message sending, reactions, voice chat, command usage, etc."""
+
+        system_prompt = ("You create fun daily quests for Discord users. Keep them achievable (5-20 actions). "
+                         "Your entire reply must be a single complete valid JSON object with all fields closed "
+                         "- never truncate, never add text outside the JSON.")
 
         try:
             result = await self.bot.ai.chat(
                 guild_id=guild_id,
                 user_id=user_id,
                 user_input=prompt,
-                system_prompt="You create fun daily quests for Discord users. Keep them achievable (5-20 actions)."
+                system_prompt=system_prompt
             )
             
             if not result or "error" in result:
-                logger.warning(f"AI failed to provide quest data: {result.get('error', 'Unknown error')}")
+                logger.warning(f"AI failed to provide quest data: {result.get('error', 'Unknown error') if result else 'empty response'}")
+                self._create_fallback_quest(guild_id, user_id)
                 return
-            
+
+            # Guard against malformed AI output: requirements/rewards must be dicts
+            requirements = result.get("requirements")
+            rewards = result.get("rewards")
+            if not isinstance(requirements, dict) or not isinstance(rewards, dict):
+                logger.warning(f"AI quest for user {user_id} had invalid structure; using fallback")
+                self._create_fallback_quest(guild_id, user_id)
+                return
+
             quest_id = f"quest_{guild_id}_{user_id}_{int(time.time())}"
             
             quest = Quest(
@@ -214,10 +250,10 @@ Make it fun and varied. Consider message sending, reactions, voice chat, command
                 guild_id=guild_id,
                 user_id=user_id,
                 quest_type=QuestType.DAILY,
-                title=result.get("title", "Daily Quest"),
-                description=result.get("description", "Complete this quest!"),
-                requirements=result.get("requirements", {"type": "messages", "count": 10}),
-                rewards=result.get("rewards", {"coins": 50, "xp": 25}),
+                title=str(result.get("title", "Daily Quest"))[:100],
+                description=str(result.get("description", "Complete this quest!"))[:500],
+                requirements=requirements,
+                rewards=rewards,
                 expires_at=time.time() + (result.get("duration_hours", 24) * 3600),
                 status=QuestStatus.ACTIVE,
                 progress=0,
@@ -232,6 +268,29 @@ Make it fun and varied. Consider message sending, reactions, voice chat, command
             if "No API key" in error_str or "API key" in error_str or "RetryError" in error_str:
                 return
             logger.warning(f"Failed to generate daily quest for user {user_id} in guild {guild_id}: {e}")
+            self._create_fallback_quest(guild_id, user_id)
+
+    def _create_fallback_quest(self, guild_id: int, user_id: int):
+        """Non-AI fallback so users always get a quest even when the AI is down."""
+        template = random.choice(self.FALLBACK_QUESTS)
+        quest_id = f"quest_{guild_id}_{user_id}_{int(time.time())}"
+        quest = Quest(
+            id=quest_id,
+            guild_id=guild_id,
+            user_id=user_id,
+            quest_type=QuestType.DAILY,
+            title=template["title"],
+            description=template["description"],
+            requirements=dict(template["requirements"]),
+            rewards=dict(template["rewards"]),
+            expires_at=time.time() + 24 * 3600,
+            status=QuestStatus.ACTIVE,
+            progress=0,
+            created_at=time.time()
+        )
+        self._active_quests[quest_id] = quest
+        self._save_quests(quest)
+        logger.info(f"Created fallback quest '{template['title']}' for user {user_id} in guild {guild_id}")
 
     async def _check_quest_progress(self):
         current_time = time.time()

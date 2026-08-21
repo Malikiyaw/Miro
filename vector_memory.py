@@ -23,7 +23,8 @@ class VectorMemory:
     Stores and retrieves conversations based on semantic similarity.
     Includes fallback to keyword search if ChromaDB fails.
     """
-    
+    _fallback_warned = False  # class-level: log degradation once, not per retry
+
     def __init__(self, persist_directory: str = "vector_db"):
         self.persist_directory = persist_directory
         self.client = None
@@ -33,11 +34,21 @@ class VectorMemory:
         self._last_retry = 0
         self._retry_interval = 300  # Retry ChromaDB every 5 minutes if it fails
         self._initialize()
-    
+
+    @classmethod
+    def _warn_fallback(cls, message: str, *args):
+        """First occurrence logs a WARNING; repeats are DEBUG to avoid log spam."""
+        if not cls._fallback_warned:
+            cls._fallback_warned = True
+            logger.warning(message + " (further occurrences will be logged at DEBUG)", *args)
+        else:
+            logger.debug(message, *args)
+
     def _initialize(self):
         """Initialize Chroma DB client and collection."""
         if not CHROMADB_AVAILABLE:
-            logger.warning("ChromaDB not available. Using fallback keyword search.")
+            self._warn_fallback("ChromaDB not installed - using keyword-search fallback. "
+                                "Install chromadb or set CHROMA_HOST for semantic memory.")
             self._fallback_enabled = True
             return
             
@@ -82,7 +93,7 @@ class VectorMemory:
             self._load_keyword_index()
             
         except Exception as e:
-            logger.error("ChromaDB initialization failed: %s. Using fallback keyword search.", e)
+            self._warn_fallback("ChromaDB initialization failed: %s - using keyword-search fallback", e)
             self._fallback_enabled = True
         finally:
             self._last_retry = time.time() if hasattr(time, 'time') else datetime.now().timestamp()
@@ -236,7 +247,8 @@ Walkthrough: {walkthrough}
                 self._add_to_keyword_index(doc_id, document_text, metadata)
             
         except Exception as e:
-            logger.error("Failed to store conversation in vector memory: %s", e)
+            self._warn_fallback("Failed to store conversation in vector memory: %s", e)
+            self._add_to_keyword_index(doc_id, document_text, metadata)
     
     def _rebuild_keyword_index(self):
         """Rebuild keyword index from collection (for migration to fallback)."""
@@ -362,8 +374,8 @@ Walkthrough: {walkthrough}
             return conversations
             
         except Exception as e:
-            logger.error("Failed to retrieve conversations from vector memory: %s", e)
-            return []
+            self._warn_fallback("Failed to retrieve conversations from vector memory: %s", e)
+            return self._keyword_search(guild_id, query, n_results)
     
     def decay_memory(self, half_life_days: float = 7.0, max_age_days: int = 30):
         """

@@ -68,6 +68,69 @@ class SlashCommands(commands.Cog):
 
         await interaction.response.send_message(embed=embed, view=panel, ephemeral=True)
 
+    # AI chat: /bot <text>
+    @app_commands.command(name="bot", description="Chat with Miro's AI - ask anything or request features")
+    @app_commands.describe(text="Your message to Miro's AI (question, idea, or feature request)")
+    async def bot_chat(self, interaction: discord.Interaction, text: str):
+        """Send any text to the server's AI and reply with its response."""
+        if not interaction.guild:
+            return await interaction.response.send_message("This command only works in servers.", ephemeral=True)
+
+        # Rate limit per user on the AI tier (admins exempt from emergency stop)
+        limiter = getattr(self.bot, "rate_limiter", None)
+        if limiter is not None:
+            allowed, retry_after = limiter.check("ai", interaction.user.id,
+                                                 exempt=interaction.user.guild_permissions.administrator)
+            if not allowed:
+                return await interaction.response.send_message(
+                    f"⏳ You're sending requests too quickly. Try again in {retry_after:.0f}s.",
+                    ephemeral=True,
+                )
+
+        await interaction.response.defer(thinking=True)
+
+        bus = getattr(self.bot, "event_bus", None)
+        if bus is not None:
+            await bus.publish("ai.request", guild_id=interaction.guild.id, user_id=interaction.user.id,
+                              source="/bot")
+
+        try:
+            result = await self.bot.ai.chat(
+                guild_id=interaction.guild.id,
+                user_id=interaction.user.id,
+                user_input=text[:2000],
+                system_prompt=(
+                    "You are Miro, a helpful and proactive Discord server assistant. "
+                    "Answer the user's question directly and concisely. If they describe a feature "
+                    "you could build, explain what you would set up for them."
+                ),
+            )
+        except Exception as e:
+            logger.error(f"/bot AI request failed for user {interaction.user.id}: {e}")
+            return await interaction.followup.send(
+                "⚠️ I couldn't reach my AI provider right now (all fallbacks failed). "
+                "Please try again in a minute — or ask an admin to check `/config status` / `/config test`.",
+            )
+
+        if not isinstance(result, dict):
+            result = {"summary": str(result)}
+
+        error = result.get("error")
+        if error:
+            return await interaction.followup.send(f"⚠️ AI error: {str(error)[:500]}")
+
+        reply = (result.get("summary") or result.get("response") or "").strip()
+        if not reply:
+            reply = "*(The AI returned an empty response — try rephrasing your message.)*"
+
+        # Discord hard-limits messages to 2000 chars; chunk long replies
+        for i in range(0, len(reply), 2000):
+            chunk = reply[i:i + 2000]
+            if i == 0:
+                await interaction.followup.send(chunk)
+            else:
+                await interaction.channel.send(chunk)
+
     # Economy commands
     @app_commands.command(name="balance", description="Check your coin balance")
     async def balance(self, interaction: discord.Interaction):
