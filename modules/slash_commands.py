@@ -1,3 +1,4 @@
+import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -121,12 +122,25 @@ class SlashCommands(commands.Cog):
                     "you could build, explain what you would set up for them."
                 ),
             )
-        except Exception as e:
-            logger.error(f"/bot AI request failed for user {interaction.user.id}: {e}")
+        except asyncio.TimeoutError:
+            logger.warning(f"/bot AI request timed out for user {interaction.user.id}")
             return await interaction.followup.send(
-                "⚠️ I couldn't reach my AI provider right now (all fallbacks failed). "
-                "Please try again in a minute — or ask an admin to check `/config status` / `/config test`.",
+                "⏱️ The AI took too long to answer (large requests like server changes can be slow). "
+                "Please try again — it usually works on the second attempt.",
             )
+        except Exception as e:
+            name = type(e).__name__
+            if "Retry" in name or "429" in str(e):
+                msg = ("⏳ My AI providers are rate-limited right now (too many requests). "
+                       "Give it a minute and try again.")
+            elif "Timeout" in name or "timeout" in str(e).lower():
+                msg = ("⏱️ The AI took too long to answer. Please try again — "
+                       "it usually works on the second attempt.")
+            else:
+                logger.error(f"/bot AI request failed for user {interaction.user.id}: {e}")
+                msg = ("⚠️ I couldn't complete that request. Please try again in a minute — "
+                       "or ask an admin to check `/config status` / `/config test`.")
+            return await interaction.followup.send(msg)
 
         if not isinstance(result, dict):
             result = {"summary": str(result)}
@@ -142,6 +156,37 @@ class SlashCommands(commands.Cog):
             if isinstance(value, str) and value.strip():
                 reply = value.strip()
                 break
+
+        # Execute the AI's action plan with the invoker's real permissions.
+        # Without this, "/bot delete this channel" produced text but nothing happened.
+        actions = result.get("actions") or []
+        if isinstance(actions, list) and actions:
+            # mark the source so the audit log records these as AI-initiated
+            try:
+                interaction._miro_ai_source = True
+            except Exception:
+                pass
+            reports = []
+            for action in actions[:5]:
+                if not isinstance(action, dict):
+                    continue
+                name = str(action.get("name") or "").strip()
+                params = action.get("parameters")
+                if not name:
+                    continue
+                try:
+                    success, info = await self.bot.action_handler.dispatch(
+                        interaction, name, params if isinstance(params, dict) else {})
+                    detail = ""
+                    if isinstance(info, dict) and info.get("error"):
+                        detail = f": {str(info['error'])[:80]}"
+                    reports.append(f"{'✅' if success else '❌'} `{name}`{detail}")
+                except Exception as e:
+                    logger.error(f"/bot action {name} failed: {e}")
+                    reports.append(f"❌ `{name}`: {str(e)[:80]}")
+            if reports:
+                reply = (reply or "Done!") + "\n\n**Actions executed:**\n" + "\n".join(reports)
+
         if not reply:
             reply = "*(The AI didn't produce a readable answer — please try rephrasing your message.)*"
 

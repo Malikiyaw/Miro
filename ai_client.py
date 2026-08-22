@@ -460,8 +460,14 @@ Only suggest actions from this list. Do not invent new actions:
         persist=True records the exchange in per-user conversation history so
         follow-ups like "proceed" keep their context (used by /bot and AI chat).
         """
-        # First enhance the user request
-        enhanced_input = await self._enhance_user_request(guild_id, user_id, user_input, system_prompt)
+        # First enhance the user request. Enhancement is OPTIONAL: it retries
+        # internally and can raise RetryError on busy providers, which used to
+        # kill the whole request (and got misreported as "provider unreachable").
+        try:
+            enhanced_input = await self._enhance_user_request(guild_id, user_id, user_input, system_prompt)
+        except Exception as e:
+            logger.warning(f"[AI] Request enhancement failed (continuing without it): {e}")
+            enhanced_input = None
         
         keys_to_try = self._get_all_guild_keys(guild_id)
         if not keys_to_try:
@@ -837,7 +843,7 @@ Only suggest actions from this list. Do not invent new actions:
             if provider in ["openai", "openrouter", "gemini", "groq", "mistral", "deepseek", "qwen", "dashscope", "cerebras", "sambanova", "together"] and prompt_has_json:
                 payload["response_format"] = {"type": "json_object"}
 
-        timeout = aiohttp.ClientTimeout(total=45, connect=10)
+        timeout = aiohttp.ClientTimeout(total=120, connect=10)
         async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
             provider_url = self.base_urls.get(provider)
             if not provider_url:
