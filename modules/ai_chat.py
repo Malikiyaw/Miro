@@ -247,6 +247,7 @@ Ensure no trailing commas, comments, or text outside JSON. Lines under 1500 char
                     guild_id=message.guild.id,
                     user_id=message.author.id,
                     user_input=user_input,
+                    persist=True,  # keep channel conversations in per-user history
                     system_prompt=system_prompt
                 )
 
@@ -426,11 +427,11 @@ Respond with JSON only:
             except Exception as e:
                 logger.error(f"Error executing action {action['name']}: {e}")
     
-    async def _chat_with_provider(self, guild_id: int, user_id: int, user_input: str, 
+    async def _chat_with_provider(self, guild_id: int, user_id: int, user_input: str,
                                 system_prompt: str, provider: AIProvider) -> dict:
         """Multi-AI Provider System - Chat with a specific AI provider."""
         try:
-            return await self.bot.ai.chat(guild_id, user_id, user_input, system_prompt)
+            return await self.bot.ai.chat(guild_id, user_id, user_input, system_prompt, persist=True)
         except Exception as e:
             logger.error(f"AI provider error: {e}")
             return {"summary": "Sorry, AI service temporarily unavailable."}

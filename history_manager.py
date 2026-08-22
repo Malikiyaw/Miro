@@ -151,7 +151,7 @@ class HistoryManager:
                 return []
             return history[key][-(depth * 2):]
 
-    async def get_enhanced_context(self, guild_id: int, user_id: int, depth: int = 20) -> List[Dict[str, str]]:
+    async def get_enhanced_context(self, guild_id: int, user_id: int, depth: int = 50) -> List[Dict[str, str]]:
         """Get context enhanced with summaries for better memory utilization"""
         if not dm.use_sqlite:
             return await self.get_context(guild_id, user_id, depth)

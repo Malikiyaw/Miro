@@ -366,7 +366,7 @@ Only suggest actions from this list. Do not invent new actions:
         3. Resolving ambiguities based on server context and conversation history
         4. Expanding incomplete requests into actionable tasks
         """
-        history_depth = int(os.getenv("MEMORY_DEPTH", 5))
+        history_depth = int(os.getenv("MEMORY_DEPTH", "50"))
         recent_history = await history_manager.get_enhanced_context(guild_id, user_id, depth=history_depth)
         
         enhancement_prompt = f"""
@@ -451,10 +451,14 @@ Only suggest actions from this list. Do not invent new actions:
                     f"'{registry.default_model(provider)}' instead")
         return registry.default_model(provider)
 
-    async def chat(self, guild_id: int, user_id: int, user_input: str, system_prompt: str) -> Dict[str, Any]:
+    async def chat(self, guild_id: int, user_id: int, user_input: str, system_prompt: str,
+                   persist: bool = False) -> Dict[str, Any]:
         """
         Communicates with the LLM using a primary provider, with automatic fallback
         to secondary providers (DashScope, OpenRouter) if the primary hits a quota limit (429/403).
+
+        persist=True records the exchange in per-user conversation history so
+        follow-ups like "proceed" keep their context (used by /bot and AI chat).
         """
         # First enhance the user request
         enhanced_input = await self._enhance_user_request(guild_id, user_id, user_input, system_prompt)
@@ -486,6 +490,8 @@ Only suggest actions from this list. Do not invent new actions:
                                                    model_override=model_override)
                 self.report_success()
                 consecutive_429 = 0
+                if persist:
+                    await self._persist_exchange(guild_id, user_id, user_input, result)
                 return result
             except AIClientError as e:
                 # If it's a quota (429), access (403), or auth (401) error, try the next provider in the guild's list
@@ -515,6 +521,19 @@ Only suggest actions from this list. Do not invent new actions:
 
     def report_failure(self):
         self.consecutive_failures = getattr(self, "consecutive_failures", 0) + 1
+
+    @staticmethod
+    async def _persist_exchange(guild_id: int, user_id: int, user_input: str, result: Dict[str, Any]):
+        """Store a conversational exchange so future requests keep their context."""
+        try:
+            reply = ""
+            if isinstance(result, dict):
+                reply = str(result.get("summary") or result.get("response") or "")[:4000]
+            if not guild_id or not user_id or not reply:
+                return
+            await history_manager.add_exchange(guild_id, user_id, user_input[:2000], reply)
+        except Exception as e:
+            logger.warning(f"Failed to persist conversation exchange: {e}")
     
     async def generate_response(self, messages: List[Dict[str, str]], guild_id: int, user_id: int, max_tokens: int = 1000) -> str:
         """
@@ -658,7 +677,7 @@ Only suggest actions from this list. Do not invent new actions:
             guild_id = 0
             
         # Get recent history
-        history_depth = int(os.getenv("MEMORY_DEPTH", 20))
+        history_depth = int(os.getenv("MEMORY_DEPTH", "50"))
         history = await history_manager.get_enhanced_context(guild_id, user_id, depth=history_depth)
         if not isinstance(history, list):
             history = []

@@ -99,6 +99,7 @@ class SlashCommands(commands.Cog):
                 guild_id=interaction.guild.id,
                 user_id=interaction.user.id,
                 user_input=text[:2000],
+                persist=True,  # remember this exchange so follow-ups like "proceed" keep context
                 system_prompt=(
                     "You are Miro, a helpful and proactive Discord server assistant. "
                     "Answer the user's question directly and concisely. If they describe a feature "
