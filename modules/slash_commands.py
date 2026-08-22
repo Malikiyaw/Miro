@@ -71,7 +71,7 @@ class SlashCommands(commands.Cog):
     # AI chat: /bot <text>
     @app_commands.command(name="bot", description="Chat with Miro's AI - ask anything or request features")
     @app_commands.describe(text="Your message to Miro's AI (question, idea, or feature request)")
-    async def bot_chat(self, interaction: discord.Interaction, text: str):
+    async def miro_chat(self, interaction: discord.Interaction, text: str):
         """Send any text to the server's AI and reply with its response."""
         if not interaction.guild:
             return await interaction.response.send_message("This command only works in servers.", ephemeral=True)
