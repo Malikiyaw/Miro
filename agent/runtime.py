@@ -25,7 +25,6 @@ from agent import recovery
 from agent.observer import Observer
 from agent.completion_gate import CompletionGate
 
-# V6 tool tiers + policies (agent/policies.py): 15 steps, retry policy in recovery
 DANGEROUS_TOOLS = {
     "delete_channel", "delete_role", "delete_messages", "bulk_delete_channels",
     "cleanup_duplicate_channels",
@@ -78,7 +77,7 @@ class AgentRuntime:
         self._signatures: List[str] = []
         self._nudges = 0
         self._original_request = ""
-        self._history: List[str] = []   # verified status lines for the live board
+        self._history: List[str] = []
 
     async def _progress(self, text: str):
         """One persistent message whose every line reflects REAL runtime state."""
@@ -96,10 +95,7 @@ class AgentRuntime:
             logger.debug(f"agent progress failed: {e}")
 
     def final_response_gate(self, text: str, result: AgentExecutionResult) -> str:
-        """
-        Truth gate (plan items 20/28): a completion claim must match receipts.
-        PLANNED ≠ EXECUTED ≠ VERIFIED — only VERIFIED may be reported as done.
-        """
+        """A completion claim must match receipts."""
         text = self._failure_aware(text or "", result)
         if not result.receipts:
             return text
@@ -115,9 +111,7 @@ class AgentRuntime:
         if failed and claims_success and not acknowledges:
             return self._receipt_summary(result)
         if not failed and not verified and claims_success:
-            # claimed success but nothing was actually executed+verified
-            base = self._receipt_summary(result) or \
-                "⚠️ No actions were executed yet."
+            base = self._receipt_summary(result) or "⚠️ No actions were executed yet."
             return f"{base}" + (f"\n\nModel note: {text[:200]}" if text else "")
         return text
 
@@ -131,7 +125,6 @@ class AgentRuntime:
                  f"Executed: {len(verified)} verified"
                  + (f", {len(unverified)} unverified" if unverified else "")
                  + (f", {len(failed)} failed" if failed else "")]
-        # Surface the backend's own result messages for verified actions
         for r in verified[-3:]:
             if r.message:
                 lines.append(f"• {r.message[:150]}")
@@ -141,7 +134,6 @@ class AgentRuntime:
 
     @staticmethod
     def _failure_aware(final_text: str, result: AgentExecutionResult) -> str:
-        """Plan item 15: a pre-execution summary must never survive failures."""
         failed = [r for r in result.receipts if not r.success]
         if not failed:
             return final_text
@@ -157,12 +149,6 @@ class AgentRuntime:
         return "\n".join(lines)
 
     def _parse_turn(self, ai_result: Dict[str, Any]) -> tuple[str, List[Dict], Optional[str], str]:
-        """
-        Normalize BOTH contracts into (summary_text, actions, final_answer, intent).
-
-        V5 contract:  {intent, tool_calls, final_answer}
-        Legacy shape: {reasoning, summary, actions}
-        """
         intent = str(ai_result.get("intent") or "").strip()
         actions = [a for a in (ai_result.get("tool_calls")
                                or ai_result.get("actions") or [])
@@ -171,16 +157,33 @@ class AgentRuntime:
         if final_answer is not None and not isinstance(final_answer, str):
             final_answer = str(final_answer)
         summary = str(ai_result.get("summary") or "").strip()
-
-        # Hard gate (plan item 5): a final answer may not coexist with
-        # pending tool calls — the calls win, the "final" text is demoted
-        # to an internal plan note.
         if actions and final_answer:
             summary = summary or f"(plan while calling tools: {final_answer})"
             final_answer = None
         if not summary and final_answer is None:
             summary = ""
         return summary, actions, final_answer, intent
+
+    def _direct_user_confirmation(self, tool_name: str) -> bool:
+        """Treat an explicit user command as confirmation for that same dangerous action.
+
+        The normal confirmation flag remains available for programmatic callers.
+        This closes the real Discord chat path where an administrator explicitly asks
+        Miro to perform a destructive operation, but the caller never supplied the
+        optional `confirmed=True` runtime flag.
+        """
+        if not self.allow_dangerous:
+            return False
+        low = (self._original_request or "").lower()
+        if tool_name in {"delete_channel", "bulk_delete_channels", "cleanup_duplicate_channels"}:
+            return any(word in low for word in ("delete", "remove", "cleanup", "clean up"))
+        if tool_name == "delete_role":
+            return any(word in low for word in ("delete", "remove")) and "role" in low
+        if tool_name == "delete_messages":
+            return any(word in low for word in ("delete", "remove", "clear")) and "message" in low
+        if tool_name in {"ban_user", "kick_user", "softban_user", "timeout_user"}:
+            return any(word in low for word in ("ban", "kick", "timeout"))
+        return False
 
     async def run(self, interaction, user_request: str, system_prompt: str,
                   initial_result: Optional[dict] = None) -> tuple[FinalAIResponse, AgentExecutionResult]:
@@ -202,7 +205,6 @@ class AgentRuntime:
         await self._progress("🔎 Starting…")
 
         while True:
-            # ---------------- PLAN ----------------
             if not pending_actions:
                 self.state = AgentState.PLANNING
                 job.status = AgentState.PLANNING
@@ -231,7 +233,6 @@ class AgentRuntime:
                     if summary:
                         messages.append({"role": "assistant", "content":
                                          f"(internal plan, not yet executed): {summary}"})
-                    # V5 contract: final_answer is void while tools are pending
                     final_answer = None
                 else:
                     blocking = any(w in (summary or "").lower() for w in
@@ -257,10 +258,6 @@ class AgentRuntime:
                     elif self._original_intent_actionable() and not summary:
                         summary = "⚠️ I could not complete that action. No tool succeeded."
 
-                    # ---- COMPLETION GATE (V6 items 8-9) --------------------
-                    # AI summaries are untrusted. Deliver only when
-                    # goal_completed / actions_successful / state_verified hold;
-                    # otherwise the factual receipt report is sent instead.
                     actionable = self._original_intent_actionable()
                     verdict = self.gate.evaluate(result, summary, actionable)
                     if actionable and not verdict.allowed:
@@ -274,7 +271,6 @@ class AgentRuntime:
                     return FinalAIResponse(text=summary or "Done.",
                                            state=result.final_state), result
 
-            # ---------------- EXECUTE ----------------
             while pending_actions:
                 step += 1
                 job.current_step = step
@@ -292,7 +288,6 @@ class AgentRuntime:
                 params = action.get("parameters") if isinstance(action.get("parameters"), dict) else {}
                 result.actions.append({"name": name, "parameters": params})
 
-                # semantic object-type gate
                 allowed, reason, suggested = tool_registry.validate(self._original_request, name)
                 if not allowed:
                     receipt = Receipt(action=name, success=False, verified=False,
@@ -308,7 +303,6 @@ class AgentRuntime:
                                      f"{reason} Use one of: {', '.join(suggested)}. Replan."})
                     continue
 
-                # parameter schema gate
                 from agent.tools import validate_params
                 ok_params, why = validate_params(name, params)
                 if not ok_params:
@@ -323,11 +317,13 @@ class AgentRuntime:
                                      f"INVALID PARAMETERS for `{name}`: {why}. Repair the tool call."})
                     continue
 
-                # dangerous gate
-                if name in DANGEROUS_TOOLS and not (self.allow_dangerous and self.confirmed):
+                if name in DANGEROUS_TOOLS and not (
+                    self.allow_dangerous and
+                    (self.confirmed or self._direct_user_confirmation(name))
+                ):
                     receipt = Receipt(action=name, success=False, verified=False,
                                       error_type=ErrorType.REFUSED_POLICY,
-                                      message="refused: dangerous action requires explicit confirmation")
+                                      message="refused: dangerous action requires administrator permission and explicit user intent")
                     result.receipts.append(receipt)
                     result.observations.append(Observation(tool=name, params=params,
                                                            success=False, verified=False,
@@ -335,7 +331,6 @@ class AgentRuntime:
                     result.failures.append(receipt.message)
                     continue
 
-                # loop detection
                 sig = f"{name}:{json.dumps(params, sort_keys=True)[:200]}"
                 if self._signatures[-3:].count(sig) >= 2:
                     result.loop_detected = True
