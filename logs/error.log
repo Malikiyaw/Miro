@@ -4,3 +4,4 @@
 2026-08-22 10:02:58,979 - MiroBot - ERROR - error:96 - Panel action 'act4' failed: backend exploded
 2026-08-22 10:38:01,967 - MiroBot - ERROR - error:96 - Failed to build moderation panel: cannot unpack non-iterable function object
 2026-08-22 10:38:01,967 - MiroBot - ERROR - error:96 - Failed to build tickets panel: cannot unpack non-iterable function object
+2026-08-22 12:24:47,572 - MiroBot - ERROR - error:96 - Agent tool find_duplicate_channels raised: No module named 'discord'

@@ -436,19 +436,20 @@ Respond with JSON only:
             logger.error(f"AI provider error: {e}")
             return {"summary": "Sorry, AI service temporarily unavailable."}
     
-    async def _handle_web_search(self, user_input: str, system_prompt: str) -> str:
+    async def _handle_web_search(self, user_input: str, system_prompt: str,
+                                 guild_id: int = 0, user_id: int = 0) -> str:
         """Web Search System - Search the web and include results in AI response."""
         try:
             search_results = await self.bot.ai.get_search_results(user_input)
-            
+
             if not search_results or "disabled" in search_results.lower() or "error" in search_results.lower():
                 return None
-            
+
             enhanced_prompt = f"{system_prompt}\n\nWEB SEARCH RESULTS:\n{search_results}\n\nBased on these results, answer the user's question."
-            
+
             result = await self.bot.ai.chat(
-                guild_id=0,
-                user_id=0,
+                guild_id=guild_id,
+                user_id=user_id,
                 user_input=user_input,
                 system_prompt=enhanced_prompt
             )

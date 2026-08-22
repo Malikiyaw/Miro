@@ -31,6 +31,19 @@ RETRYABLE = {AIErrorType.RATE_LIMIT, AIErrorType.TIMEOUT,
              AIErrorType.NETWORK_ERROR, AIErrorType.PROVIDER_ERROR}
 
 
+class ResponseKind(str, Enum):
+    """What KIND of turn this is — drives the agent state machine.
+
+    A TOOL_CALL_RESPONSE is a legitimate intermediate turn: it must never
+    reach the blank-answer handler or the final-answer watchdog.
+    """
+    TEXT_RESPONSE = "TEXT_RESPONSE"          # plain answer, ready for Discord
+    TOOL_CALL_RESPONSE = "TOOL_CALL_RESPONSE"  # model wants tools executed
+    FINAL_RESPONSE = "FINAL_RESPONSE"        # agent's closing answer
+    EMPTY_RESPONSE = "EMPTY_RESPONSE"
+    ERROR = "ERROR"
+
+
 def new_request_id() -> str:
     return f"ai_{uuid.uuid4().hex[:8]}"
 
@@ -43,19 +56,26 @@ class AIResponse:
     model: str = ""
     request_id: str = field(default_factory=new_request_id)
     status: AIErrorType = AIErrorType.OK
+    kind: ResponseKind = ResponseKind.TEXT_RESPONSE
     finish_reason: str = ""
     usage: Dict[str, int] = field(default_factory=dict)
     has_tool_calls: bool = False
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     raw_shape: str = ""          # which branch of the normalizer matched
     latency_ms: float = 0.0
 
     @property
     def ok(self) -> bool:
-        return self.status == AIErrorType.OK and bool(self.text.strip())
+        """A tool-call turn IS okay without text; text turns need content."""
+        if self.status != AIErrorType.OK:
+            return False
+        if self.kind == ResponseKind.TOOL_CALL_RESPONSE:
+            return True
+        return bool(self.text.strip())
 
     def describe(self) -> str:
         """Human-readable one-liner for logs and /config test."""
-        base = f"{self.provider}/{self.model or '?'} [{self.status.value}]"
+        base = f"{self.provider}/{self.model or '?'} [{self.status.value}/{self.kind.value}]"
         if self.usage:
             base += f" tokens={self.usage.get('total_tokens', '?')}"
         if self.latency_ms:
@@ -103,6 +123,7 @@ def normalize_provider_response(res_data: Any, provider: str = "", model: str = 
 
     if not isinstance(res_data, dict):
         resp.status = AIErrorType.INVALID_RESPONSE
+        resp.kind = ResponseKind.ERROR
         resp.raw_shape = "non-dict"
         return resp
 
@@ -121,17 +142,33 @@ def normalize_provider_response(res_data: Any, provider: str = "", model: str = 
             resp.text = _text_from_parts(message["content"])
             resp.raw_shape = "choices[0].message.content"
             resp.status = AIErrorType.OK if resp.text.strip() else AIErrorType.EMPTY_RESPONSE
+            resp.kind = (ResponseKind.TEXT_RESPONSE if resp.text.strip()
+                         else ResponseKind.EMPTY_RESPONSE)
             return resp
         if isinstance(choice.get("text"), str):          # legacy completions
             resp.text = choice["text"]
             resp.raw_shape = "choices[0].text"
             resp.status = AIErrorType.OK if resp.text.strip() else AIErrorType.EMPTY_RESPONSE
+            resp.kind = (ResponseKind.TEXT_RESPONSE if resp.text.strip()
+                         else ResponseKind.EMPTY_RESPONSE)
             return resp
         if resp.has_tool_calls:                           # tool-call turn: valid, no text yet
             resp.raw_shape = "choices[0].message.tool_calls"
             resp.status = AIErrorType.OK
+            resp.kind = ResponseKind.TOOL_CALL_RESPONSE
+            try:
+                for tc in tool_calls:
+                    fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
+                    resp.tool_calls.append({
+                        "name": fn.get("name", ""),
+                        "arguments": fn.get("arguments", "{}"),
+                        "id": tc.get("id", "") if isinstance(tc, dict) else "",
+                    })
+            except Exception:
+                pass
             return resp
         resp.status = AIErrorType.EMPTY_RESPONSE
+        resp.kind = ResponseKind.EMPTY_RESPONSE
         resp.raw_shape = "choices-without-content"
         return resp
 
@@ -141,6 +178,8 @@ def normalize_provider_response(res_data: Any, provider: str = "", model: str = 
         resp.finish_reason = str(res_data.get("stop_reason") or "")
         resp.raw_shape = "anthropic.content[]"
         resp.status = AIErrorType.OK if resp.text.strip() else AIErrorType.EMPTY_RESPONSE
+        resp.kind = (ResponseKind.TEXT_RESPONSE if resp.text.strip()
+                     else ResponseKind.EMPTY_RESPONSE)
         return resp
 
     # --- Responses API (output_text / output[]) ---
@@ -148,6 +187,8 @@ def normalize_provider_response(res_data: Any, provider: str = "", model: str = 
         resp.text = res_data["output_text"]
         resp.raw_shape = "output_text"
         resp.status = AIErrorType.OK if resp.text.strip() else AIErrorType.EMPTY_RESPONSE
+        resp.kind = (ResponseKind.TEXT_RESPONSE if resp.text.strip()
+                     else ResponseKind.EMPTY_RESPONSE)
         return resp
     output = res_data.get("output")
     if isinstance(output, list):
@@ -158,6 +199,8 @@ def normalize_provider_response(res_data: Any, provider: str = "", model: str = 
         resp.text = "".join(texts)
         resp.raw_shape = "responses.output[]"
         resp.status = AIErrorType.OK if resp.text.strip() else AIErrorType.EMPTY_RESPONSE
+        resp.kind = (ResponseKind.TEXT_RESPONSE if resp.text.strip()
+                     else ResponseKind.EMPTY_RESPONSE)
         return resp
 
     # --- Gemini native candidates ---
@@ -171,6 +214,8 @@ def normalize_provider_response(res_data: Any, provider: str = "", model: str = 
             resp.finish_reason = str(cand.get("finishReason") or "")
             resp.raw_shape = "gemini.candidates[0]"
             resp.status = AIErrorType.OK if resp.text.strip() else AIErrorType.EMPTY_RESPONSE
+            resp.kind = (ResponseKind.TEXT_RESPONSE if resp.text.strip()
+                         else ResponseKind.EMPTY_RESPONSE)
             return resp
 
     # --- Plain string bodies (some proxies) ---
@@ -178,9 +223,12 @@ def normalize_provider_response(res_data: Any, provider: str = "", model: str = 
         resp.text = res_data["response"]
         resp.raw_shape = "response:str"
         resp.status = AIErrorType.OK if resp.text.strip() else AIErrorType.EMPTY_RESPONSE
+        resp.kind = (ResponseKind.TEXT_RESPONSE if resp.text.strip()
+                     else ResponseKind.EMPTY_RESPONSE)
         return resp
 
     resp.status = AIErrorType.INVALID_RESPONSE
+    resp.kind = ResponseKind.ERROR
     resp.raw_shape = f"unrecognized:{list(res_data.keys())[:6]}"
     return resp
 

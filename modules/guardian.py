@@ -135,7 +135,8 @@ class GuardianSystem(commands.Cog):
             is_scam = True  # default; AI can override
             if hasattr(self.bot, "ai"):
                 try:
-                    analysis = await self.bot.ai.analyze_content(content, "scam_check")
+                    analysis = await self.bot.ai.analyze_content(content, "scam_check",
+                                                                 guild_id=guild.id)
                     is_scam = analysis.get("is_scam", True)
                 except Exception:
                     pass

@@ -190,7 +190,9 @@ class AIClient:
         system_prompt = mode_prompts.get(mode, mode_prompts["scam_check"])
 
         try:
-            keys = self._get_all_guild_keys(0)
+            if not guild_id:
+                logger.warning("analyze_content called without guild_id; using bot-wide defaults")
+            keys = self._get_all_guild_keys(guild_id or 0)
             if not keys:
                 return {"is_scam": False, "confidence": 0.0, "reason": "AI not configured"}
             key_bundle = keys[0]

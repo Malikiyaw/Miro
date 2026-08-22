@@ -161,35 +161,70 @@ class SlashCommands(commands.Cog):
                 reply = value.strip()
                 break
 
-        # Execute the AI's action plan with the invoker's real permissions.
-        # Without this, "/bot delete this channel" produced text but nothing happened.
+        # Agentic execution: the model's plan runs through the agent runtime
+        # (tool → observe → replan → final answer). Internal planning text
+        # never reaches Discord — only the final response + a report.
         actions = result.get("actions") or []
         if isinstance(actions, list) and actions:
-            # mark the source so the audit log records these as AI-initiated
+            from core.guild_ai_config import GuildAIConfig
+            gcfg = GuildAIConfig.load(interaction.guild.id)
             try:
                 interaction._miro_ai_source = True
             except Exception:
                 pass
-            reports = []
-            for action in actions[:5]:
-                if not isinstance(action, dict):
-                    continue
-                name = str(action.get("name") or "").strip()
-                params = action.get("parameters")
-                if not name:
-                    continue
+
+            if gcfg.agent_enabled:
+                from core.agent_runtime import AgentRuntime
+                allow_dangerous = bool(
+                    interaction.user.guild_permissions.administrator)
+                runtime = AgentRuntime(self.bot, interaction.guild, interaction.user,
+                                       allow_dangerous=allow_dangerous)
+                final, exec_result = await runtime.run(
+                    interaction, text[:2000],
+                    ("You are Miro, a helpful and proactive Discord server assistant "
+                     "executing an operation for a trusted administrator."),
+                    initial_result=result)
+                reply = final.text or "Done."
+                if exec_result.observations:
+                    lines = []
+                    for obs in exec_result.observations:
+                        if obs.success and obs.verified:
+                            mark = "✅"
+                        elif obs.success:
+                            mark = "⚠️"
+                        else:
+                            mark = "❌"
+                        line = f"{mark} `{obs.tool}`"
+                        if not obs.success and obs.detail:
+                            line += f" — {obs.detail[:80]}"
+                        lines.append(line)
+                    reply += "\n\n**Actions:**\n" + "\n".join(lines)
+            else:
+                # Agent mode off: direct one-pass dispatch (previous behavior)
                 try:
-                    success, info = await self.bot.action_handler.dispatch(
-                        interaction, name, params if isinstance(params, dict) else {})
-                    detail = ""
-                    if isinstance(info, dict) and info.get("error"):
-                        detail = f": {str(info['error'])[:80]}"
-                    reports.append(f"{'✅' if success else '❌'} `{name}`{detail}")
-                except Exception as e:
-                    logger.error(f"/bot action {name} failed: {e}")
-                    reports.append(f"❌ `{name}`: {str(e)[:80]}")
-            if reports:
-                reply = (reply or "Done!") + "\n\n**Actions executed:**\n" + "\n".join(reports)
+                    interaction._miro_ai_source = True
+                except Exception:
+                    pass
+                reports = []
+                for action in actions[:5]:
+                    if not isinstance(action, dict):
+                        continue
+                    name = str(action.get("name") or "").strip()
+                    params = action.get("parameters")
+                    if not name:
+                        continue
+                    try:
+                        success, info = await self.bot.action_handler.dispatch(
+                            interaction, name, params if isinstance(params, dict) else {})
+                        detail = ""
+                        if isinstance(info, dict) and info.get("error"):
+                            detail = f": {str(info['error'])[:80]}"
+                        reports.append(f"{'✅' if success else '❌'} `{name}`{detail}")
+                    except Exception as e:
+                        logger.error(f"/bot action {name} failed: {e}")
+                        reports.append(f"❌ `{name}`: {str(e)[:80]}")
+                if reports:
+                    reply = (reply or "Done!") + "\n\n**Actions executed:**\n" + "\n".join(reports)
 
         if not reply:
             reply = "*(The AI didn't produce a readable answer — please try rephrasing your message.)*"

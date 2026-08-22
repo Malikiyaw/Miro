@@ -242,6 +242,7 @@ class ActionHandler:
     ALLOWED_ACTIONS = {
         "send_message", "send_embed", "add_role", "remove_role",
         "create_channel", "create_shop_channel", "delete_channel", "create_role", "delete_role",
+        "find_duplicate_channels",
         "create_category", "edit_channel", "edit_role", "assign_role",
         "assign_role_by_name", "create_prefix_command", "create_command", "make_command", "add_command", "new_command", "delete_prefix_command",
         "setup_welcome", "setup_logging", "setup_verification", "setup_economy", "setup_leveling",
@@ -3098,6 +3099,25 @@ class ActionHandler:
         ]
         await self._send_query_result(interaction, f"Server Info: {data['name']}", data.get("description", ""), fields)
         return True, None
+
+    async def action_find_duplicate_channels(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        """Deterministic duplicate-channel finder. The agent decides what to do
+        with the verified result — it never invents duplicate-detection logic."""
+        name = str(params.get("name") or "").strip()
+        if not name:
+            return False, {"error": "find_duplicate_channels requires 'name'."}
+        from core.agent_runtime import find_duplicate_channels
+        exclude = params.get("exclude_channel_id") or params.get("protected_channel_id")
+        data = find_duplicate_channels(interaction.guild, name, exclude)
+        dup_count = len(data["duplicates"])
+        return True, {
+            "message": (f"{len(data['matches'])} channel(s) match '{name}': "
+                        f"1 protected, {dup_count} duplicate(s) to remove"
+                        if data["matches"] else f"No channels matching '{name}'."),
+            "matches": data["matches"],
+            "protected_id": data["protected_id"],
+            "duplicates": data["duplicates"],
+        }
 
     async def action_query_channels(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
         channels = await self.bot.server_query.query_channels(interaction.guild.id, params.get("type"))
