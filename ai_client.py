@@ -787,7 +787,8 @@ Only suggest actions from this list. Do not invent new actions:
             })
         
         combined_context = history + vector_context
-        enhanced_prompt = await self._build_enhanced_prompt(system_prompt, guild_id, user_id)
+        enhanced_prompt = await self._build_enhanced_prompt(system_prompt, guild_id, user_id,
+                                                            user_input=user_input)
         
         messages = [{"role": "system", "content": enhanced_prompt}]
         messages.extend(combined_context)
