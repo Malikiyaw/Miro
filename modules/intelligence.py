@@ -46,21 +46,27 @@ class ServerIntelligence:
 
     def _load_data(self):
         saved_data = dm.load_json("server_intelligence", default={})
-        
+        if not isinstance(saved_data, dict):
+            return
+
         for guild_id_str, guild_data in saved_data.items():
             try:
                 guild_id = int(guild_id_str)
                 self._activity_data[guild_id] = {}
-                
-                for user_id_str, user_data in guild_data.get("users", {}).items():
+
+                users = guild_data.get("users", {}) if isinstance(guild_data, dict) else {}
+                for user_id_str, user_data in users.items():
+                    if not isinstance(user_data, dict):
+                        continue  # skip corrupted/legacy entries
                     self._activity_data[guild_id][int(user_id_str)] = UserActivity(
                         user_id=int(user_id_str),
-                        messages_sent=user_data.get("messages_sent", 0),
-                        voice_time=user_data.get("voice_time", 0),
-                        commands_used=user_data.get("commands_used", 0),
-                        last_active=user_data.get("last_active", 0),
+                        messages_sent=int(user_data.get("messages_sent", 0) or 0),
+                        voice_time=float(user_data.get("voice_time", 0) or 0),
+                        commands_used=int(user_data.get("commands_used", 0) or 0),
+                        last_active=float(user_data.get("last_active", 0) or 0),
                         joined_at=user_data.get("joined_at", time.time()),
                         interaction_scores=user_data.get("interaction_scores", [])
+                        if isinstance(user_data.get("interaction_scores"), list) else []
                     )
             except Exception as e:
                 logger.error(f"Failed to load intelligence data for guild {guild_id_str}: {e}")
@@ -119,6 +125,8 @@ class ServerIntelligence:
             
             recent_commands = []
             for cmd, data in command_usage.items():
+                if not isinstance(data, dict):
+                    continue  # counters or legacy ints are not usable here
                 last_used = data.get("last_used", 0)
                 if time.time() - last_used < 86400:
                     recent_commands.append({"command": cmd, "uses": data.get("count", 0), "last_used": last_used})
@@ -141,6 +149,8 @@ class ServerIntelligence:
                         at_risk.append({"user_id": user_id, "days_inactive": days_inactive, "join_date": member.joined_at})
             
             risk_data = dm.get_guild_data(guild.id, "at_risk_members", {})
+            if not isinstance(risk_data, dict):
+                risk_data = {}
             risk_data["members"] = at_risk
             risk_data["last_updated"] = time.time()
             dm.update_guild_data(guild.id, "at_risk_members", risk_data)
@@ -162,12 +172,14 @@ class ServerIntelligence:
         
         command_usage = dm.get_guild_data(guild_id, "command_usage", {})
         for cmd, data in command_usage.items():
+            if not isinstance(data, dict):
+                continue
             last_used = data.get("last_used", 0)
             if time.time() - last_used < 86400:
                 commands_today += data.get("count", 0)
-        
+
         health_data = dm.get_guild_data(guild_id, "server_health", {})
-        messages_today = health_data.get("messages_today", 0)
+        messages_today = health_data.get("messages_today", 0) if isinstance(health_data, dict) else 0
         
         new_members = len([m for m in guild.members if m.joined_at and (discord.utils.utcnow() - m.joined_at).days == 0])
         

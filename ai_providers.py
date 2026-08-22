@@ -8,6 +8,9 @@ from logger import logger
 
 
 class AIProviderRegistry:
+    # Model families that can't generate chat/JSON responses — selecting them
+    # for generation yields "Invalid model" errors or useless greetings.
+    NON_CHAT_PATTERNS = ("embed", "whisper", "tts", "rerank", "moderation", "-guard", "bge-", "e5-")
     """
     Single source of truth for AI providers: display metadata, curated model
     lists, default models, key signup URLs, and live capabilities
@@ -156,6 +159,14 @@ class AIProviderRegistry:
     def key_signup_url(self, provider: str) -> str:
         return self.providers.get(provider, {}).get("key_url", "")
 
+    @staticmethod
+    def is_chat_model(model: str) -> bool:
+        """True when a model can actually generate conversational output."""
+        m = (model or "").lower()
+        if not m:
+            return False
+        return not any(pattern in m for pattern in AIProviderRegistry.NON_CHAT_PATTERNS)
+
     def validate_key_format(self, provider: str, api_key: str) -> Tuple[bool, str]:
         """Cheap local sanity checks before any network call."""
         key = (api_key or "").strip()
@@ -216,6 +227,7 @@ class AIProviderRegistry:
                     models = sorted({
                         m.get("id") for m in data.get("data", [])
                         if isinstance(m, dict) and m.get("id")
+                        and AIProviderRegistry.is_chat_model(m["id"])
                     })
                     if models:
                         self._models_cache[cache_key] = (now, models)

@@ -53,23 +53,37 @@ class ServerAnalytics:
         logger.info(f"Server analytics will start in {delay:.0f} seconds")
         await asyncio.sleep(delay)
     
+    @staticmethod
+    def _sanitize_hourly(data) -> Dict[str, Dict]:
+        """
+        Guarantee {hour_key: {metrics}} shape no matter what is stored on disk.
+        Protects every consumer from legacy/corrupted entries ('int' object has
+        no attribute 'get', string indices must be integers).
+        """
+        if not isinstance(data, dict):
+            return {}
+        hourly = data.get("hourly_data")
+        if not isinstance(hourly, dict):
+            return {}
+        return {k: v for k, v in hourly.items() if isinstance(v, dict)}
+
     async def _log_hourly_metrics(self):
         """Collect and store metrics for all guilds"""
         for guild in self.bot.guilds:
             try:
                 guild_id = guild.id
                 hour_key = datetime.now().strftime("%Y-%m-%d-%H")
-                
+
                 # Get metrics from the last hour
                 metrics = await self._collect_guild_metrics(guild)
-                
+
                 # Store in JSON file
                 analytics_file = f"server_analytics_{guild_id}"
-                analytics_data = dm.load_json(analytics_file, default={"hourly_data": {}})
-                
-                if "hourly_data" not in analytics_data:
-                    analytics_data["hourly_data"] = {}
-                
+                analytics_data = dm.load_json(analytics_file, default=None)
+                if not isinstance(analytics_data, dict):
+                    analytics_data = {}
+                analytics_data["hourly_data"] = self._sanitize_hourly(analytics_data)
+
                 analytics_data["hourly_data"][hour_key] = {
                     "timestamp": time.time(),
                     "message_count": metrics["message_count"],
@@ -108,9 +122,10 @@ class ServerAnalytics:
                     latest_hour = sorted(hourly_stats.keys())[0] if hourly_stats else None
                     if latest_hour:
                         hour_data = hourly_stats[latest_hour]
-                        metrics["message_count"] = hour_data.get("message_count", 0)
-                        metrics["unique_chatters"] = hour_data.get("unique_chatters", 0)
-                        metrics["xp_gained"] = hour_data.get("xp_gained", 0)
+                        if isinstance(hour_data, dict):
+                            metrics["message_count"] = int(hour_data.get("message_count", 0) or 0)
+                            metrics["unique_chatters"] = int(hour_data.get("unique_chatters", 0) or 0)
+                            metrics["xp_gained"] = int(hour_data.get("xp_gained", 0) or 0)
             
             # Voice minutes metric removed - voice_system has been deleted
             metrics["voice_minutes"] = 0
@@ -129,18 +144,21 @@ class ServerAnalytics:
         for guild in self.bot.guilds:
             try:
                 analytics_file = f"server_analytics_{guild.id}"
-                analytics_data = dm.load_json(analytics_file, default={"hourly_data": {}})
-                
+                analytics_data = dm.load_json(analytics_file, default=None)
+                if not isinstance(analytics_data, dict):
+                    continue
+
                 if "hourly_data" not in analytics_data:
                     continue
-                
-                # Remove old entries
-                original_count = len(analytics_data["hourly_data"])
+
+                # Remove old entries (skip corrupted non-dict entries too)
+                original_count = len(analytics_data["hourly_data"]) if isinstance(analytics_data["hourly_data"], dict) else 0
+                cleaned = self._sanitize_hourly(analytics_data)
                 analytics_data["hourly_data"] = {
-                    hour: data for hour, data in analytics_data["hourly_data"].items()
-                    if data.get("timestamp", 0) > cutoff_time
+                    hour: data for hour, data in cleaned.items()
+                    if isinstance(data.get("timestamp", 0), (int, float)) and data.get("timestamp", 0) > cutoff_time
                 }
-                
+
                 pruned_count = original_count - len(analytics_data["hourly_data"])
                 if pruned_count > 0:
                     dm.save_json(analytics_file, analytics_data)
@@ -164,10 +182,10 @@ class ServerAnalytics:
             - recommendations: list of suggestions
         """
         analytics_file = f"server_analytics_{guild_id}"
-        analytics_data = dm.load_json(analytics_file, default={"hourly_data": {}})
-        
-        hourly_data = analytics_data.get("hourly_data", {})
-        
+        analytics_data = dm.load_json(analytics_file, default=None)
+
+        hourly_data = self._sanitize_hourly(analytics_data)
+
         if not hourly_data:
             return self._generate_empty_forecast()
         
@@ -410,9 +428,9 @@ class ServerAnalytics:
     async def get_hourly_stats(self, guild_id: int, hours: int = 24) -> Dict[str, Any]:
         """Get raw hourly statistics for the past N hours"""
         analytics_file = f"server_analytics_{guild_id}"
-        analytics_data = dm.load_json(analytics_file, default={"hourly_data": {}})
-        
-        hourly_data = analytics_data.get("hourly_data", {})
+        analytics_data = dm.load_json(analytics_file, default=None)
+
+        hourly_data = self._sanitize_hourly(analytics_data)
         sorted_hours = sorted(hourly_data.keys(), reverse=True)[:hours]
         
         return {

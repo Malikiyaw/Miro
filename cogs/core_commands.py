@@ -118,6 +118,16 @@ class CoreCommands(commands.Cog):
         model = model.strip()
         provider = self._active_provider(interaction.guild.id)
 
+        # Embedding/utility models categorically cannot generate responses
+        if not AIProviderRegistry.is_chat_model(model):
+            await interaction.followup.send(
+                f"❌ `{model}` is an embedding/utility model — it can't generate chat or JSON "
+                f"responses. Pick a chat model via the autocomplete (live models are filtered "
+                f"automatically), e.g. `{self.providers.default_model(provider)}`.",
+                ephemeral=True,
+            )
+            return
+
         if not force:
             known = await self._known_models(interaction.guild.id, provider)
             if known and model not in known:

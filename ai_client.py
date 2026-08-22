@@ -11,6 +11,7 @@ from history_manager import history_manager
 from vector_memory import vector_memory
 from actions import ActionHandler
 from blueprints import BLUEPRINT
+from ai_providers import AIProviderRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -432,6 +433,11 @@ Only suggest actions from this list. Do not invent new actions:
         custom = dm.get_guild_data(guild_id, "custom_model", None)
         if not custom:
             return None
+        if not registry.is_chat_model(custom):
+            default = registry.default_model(provider)
+            logger.warning(f"Stored model '{custom}' is an embedding/utility model and "
+                           f"cannot generate responses; using '{default}' for {provider}")
+            return default
         curated = [m.lower() for m in registry.curated_models(provider)]
         if not curated:
             return custom  # unknown provider shape; let the API decide
@@ -561,7 +567,10 @@ Only suggest actions from this list. Do not invent new actions:
             }
             active_model = defaults.get(provider, "gpt-3.5-turbo")
             logger.warning(f"Model {self.model} doesn't match provider {provider}, using {active_model} instead")
-        
+
+        if not AIProviderRegistry.is_chat_model(active_model):
+            active_model = AIProviderRegistry().default_model(provider)
+
         # Build payload
         payload = {
             "model": active_model,
@@ -711,6 +720,15 @@ Only suggest actions from this list. Do not invent new actions:
             active_model = "qwen2.5-72b-instruct" # Updated to newest stable qwen
         elif not active_model:
             active_model = self.model or "gpt-3.5-turbo"
+
+        # Final guard: embedding/utility models can't generate responses.
+        # A stale stored selection used to produce "Invalid model" errors or
+        # generic greetings instead of JSON.
+        if active_model and not AIProviderRegistry.is_chat_model(active_model):
+            fallback_default = AIProviderRegistry().default_model(provider)
+            logger.warning(f"Model '{active_model}' is not a chat-capable model; "
+                           f"using '{fallback_default}' for {provider} instead")
+            active_model = fallback_default
         
         if provider == "anthropic":
             headers = {

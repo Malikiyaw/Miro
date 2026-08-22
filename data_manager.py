@@ -146,9 +146,15 @@ class DataManager:
             temp_path = f"{file_path}.tmp"
 
             try:
-                # Prepare data
+                # Keep the original object so the cache round-trips correctly;
+                # caching the serialized string made later load_json() calls
+                # return raw JSON text and crash consumers with
+                # "string indices must be integers".
+                cached_value = data
+
                 if encrypt and isinstance(data, str):
                     data = self._encrypt_data(data)
+                    cached_value = data
                 elif not isinstance(data, str):
                     data = json.dumps(data, indent=2, ensure_ascii=False)
 
@@ -162,8 +168,8 @@ class DataManager:
                 # Atomic move
                 os.replace(temp_path, file_path)
 
-                # Update cache
-                self._cache[filename] = data
+                # Update cache with the original object (not its serialization)
+                self._cache[filename] = cached_value
 
             except Exception as e:
                 if os.path.exists(temp_path):
