@@ -910,7 +910,16 @@ Only suggest actions from this list. Do not invent new actions:
         """Robustly extract JSON from AI response, handling Markdown and conversational filler."""
         if not text:
             return {"summary": ""}
-            
+
+        # Pure conversational reply — the model chose to answer in plain text,
+        # which is perfectly valid. Delivering it beats replacing it with an
+        # error message ("Hi! How can I assist you..." must reach the user).
+        # Every consumer expects a JSON *object*; prose with [brackets] is
+        # still conversation, not a truncated payload.
+        stripped = text.strip()
+        if "{" not in stripped:
+            return {"summary": stripped}
+
         # Try direct parse first
         try:
             parsed = json.loads(text.strip())
