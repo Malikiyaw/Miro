@@ -11,12 +11,14 @@ class ConfigPanelView(ui.View):
         self.bot = bot
         self.guild_id = guild_id
         self.system_name = system_name
+        # reaction-roles stores mappings directly under "reaction_roles"
+        self.storage_key = "reaction_roles" if system_name == "reaction_roles" else f"{system_name}_config"
 
     def get_config(self):
-        return dm.get_guild_data(self.guild_id, f"{self.system_name}_config", {})
+        return dm.get_guild_data(self.guild_id, self.storage_key, {})
 
     async def save_config(self, config):
-        dm.update_guild_data(self.guild_id, f"{self.system_name}_config", config)
+        dm.update_guild_data(self.guild_id, self.storage_key, config)
 
     async def interaction_check(self, interaction) -> bool:
         if not interaction.user.guild_permissions.administrator:
@@ -118,7 +120,7 @@ class AntiRaidConfigPanel(ConfigPanelView):
 
 class AutoModConfigPanel(ConfigPanelView):
     def __init__(self, bot, guild_id: int):
-        super().__init__(bot, guild_id, "auto_mod")
+        super().__init__(bot, guild_id, "automod")
 
     @discord.ui.button(label="Toggle Auto-Mod", style=discord.ButtonStyle.primary, row=0)
     async def toggle_auto_mod(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -129,7 +131,7 @@ class AutoModConfigPanel(ConfigPanelView):
 
 class WarningsConfigPanel(ConfigPanelView):
     def __init__(self, bot, guild_id: int):
-        super().__init__(bot, guild_id, "warnings")
+        super().__init__(bot, guild_id, "warning")
 
     @discord.ui.button(label="Toggle Warnings", style=discord.ButtonStyle.primary, row=0)
     async def toggle_warnings(self, interaction: discord.Interaction, button: discord.ui.Button):

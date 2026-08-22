@@ -175,6 +175,11 @@ class AutoResponderSystem:
                     pass
 
 
+# Compat alias: the admin panels below instantiate `AutoResponder(bot)`;
+# the real class is AutoResponderSystem (same methods).
+AutoResponder = AutoResponderSystem
+
+
 class AutoResponderPanel(View):
     """Admin panel for Auto Responder configuration."""
     

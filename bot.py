@@ -237,7 +237,8 @@ class MiroBot(commands.Bot):
         # Start the shared task scheduler (fires reminders, giveaways, AI tasks)
         await self.task_scheduler.start()
 
-        # Start system monitors (sync methods - no await)        self.anti_raid.start_monitoring()
+        # Start system monitors (sync methods - no await)
+        self.anti_raid.start_monitoring()
 
         # Start task monitor methods (sync - no await needed)
         self.staff_reviews.start_tasks()
@@ -487,10 +488,24 @@ class MiroBot(commands.Bot):
         """Handle reaction adds."""
         try:
             await self.starboard.handle_reaction_add(reaction, user)
-            await self.suggestions.handle_reaction_add(reaction, user)
             await self.staff_extras.on_reaction_add(reaction, user)
         except Exception as e:
             logger.error(f"Reaction add error: {e}")
+
+    async def on_raw_reaction_add(self, payload):
+        """Raw reaction events drive reaction-role assignments."""
+        try:
+            if payload.guild_id:
+                await self.reaction_roles.handle_reaction_add(payload)
+        except Exception as e:
+            logger.error(f"Raw reaction add error: {e}")
+
+    async def on_raw_reaction_remove(self, payload):
+        try:
+            if payload.guild_id:
+                await self.reaction_roles.handle_reaction_remove(payload)
+        except Exception as e:
+            logger.error(f"Raw reaction remove error: {e}")
 
     async def on_guild_join(self, guild):
         """Handle joining a new guild."""

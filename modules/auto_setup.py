@@ -27,16 +27,43 @@ class ServerSetup:
     selected_systems: Optional[List[str]] = None
 
 class SystemCategory:
-    SECURITY = {"name": "🛡️ Security", "emoji": "🛡️", "systems": ["verification", "anti_raid", "guardian", "auto_mod", "warnings"]}
-    ENGAGEMENT = {"name": "🎮 Engagement", "emoji": "🎮", "systems": ["economy", "leveling", "giveaways", "gamification", "starboard"]}
-    MODERATION = {"name": "📝 Moderation", "emoji": "📝", "systems": ["mod_logging", "logging", "modmail", "suggestions"]}
-    STAFF = {"name": "👥 Staff", "emoji": "👥", "systems": ["staff_promo", "staff_shifts", "staff_reviews", "applications", "appeals"]}
-    AUTOMATION = {"name": "🤖 Automation", "emoji": "🤖", "systems": ["welcome_leave", "tickets", "reminders", "announcements", "auto_responder"]}
-    UTILITY = {"name": "🔧 Utility", "emoji": "🔧", "systems": ["reaction_roles", "reaction_menus", "role_buttons", "ai_chat"]}
+    """
+    The 10 consolidated setup groups. Each group installs its underlying
+    systems (all original functionality preserved underneath).
+    """
+    MEMBER_MANAGEMENT = {"name": "👤 Member Management", "emoji": "👤", "group_key": "member_management",
+                         "systems": ["verification", "welcome_leave"]}
+    PROGRESSION = {"name": "💰 Progression", "emoji": "💰", "group_key": "progression",
+                   "systems": ["economy", "leveling"]}
+    TICKETS = {"name": "🎫 Tickets", "emoji": "🎫", "group_key": "tickets",
+               "systems": ["tickets"]}
+    SUGGESTIONS = {"name": "💡 Suggestions", "emoji": "💡", "group_key": "suggestions",
+                   "systems": ["suggestions"]}
+    GIVEAWAYS = {"name": "🎁 Giveaways", "emoji": "🎁", "group_key": "giveaways",
+                 "systems": ["giveaways"]}
+    COMMUNICATIONS = {"name": "📢 Communications", "emoji": "📢", "group_key": "communications",
+                      "systems": ["announcements", "reminders"]}
+    ANTI_RAID = {"name": "🛡️ Anti-Raid", "emoji": "🛡️", "group_key": "anti_raid",
+                 "systems": ["anti_raid"]}
+    MODERATION = {"name": "🔨 Moderation", "emoji": "🔨", "group_key": "moderation",
+                  "systems": ["automod", "warnings"]}
+    AUTOMATION = {"name": "⚙️ Automation", "emoji": "⚙️", "group_key": "automation",
+                  "systems": ["auto_responder", "reaction_roles"]}
+    STAFF_MANAGEMENT = {"name": "👮 Staff Management", "emoji": "👮", "group_key": "staff_management",
+                        "systems": ["staff_shifts", "staff_reviews"]}
 
     @classmethod
     def get_all_categories(cls):
-        return [cls.SECURITY, cls.ENGAGEMENT, cls.MODERATION, cls.STAFF, cls.AUTOMATION, cls.UTILITY]
+        return [cls.MEMBER_MANAGEMENT, cls.PROGRESSION, cls.TICKETS, cls.SUGGESTIONS,
+                cls.GIVEAWAYS, cls.COMMUNICATIONS, cls.ANTI_RAID, cls.MODERATION,
+                cls.AUTOMATION, cls.STAFF_MANAGEMENT]
+
+    @classmethod
+    def find_by_key(cls, group_key: str):
+        for category in cls.get_all_categories():
+            if category["group_key"] == group_key:
+                return category
+        return None
 
 class AutoSetupSystem:
     """
