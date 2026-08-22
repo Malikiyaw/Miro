@@ -61,6 +61,7 @@ class SlashCommands(commands.Cog):
         )
 
         emoji, description = config_panels.get_system_info(system)
+        embed.add_field(name=f"{emoji} System", value=description, inline=False)
 
         # Panels imported from feature modules (verification, economy, ...)
         # don't share ConfigPanelView's accessor — fall back to their real
