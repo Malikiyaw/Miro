@@ -6,3 +6,5 @@
 2026-08-22 10:38:01,967 - MiroBot - ERROR - error:96 - Failed to build tickets panel: cannot unpack non-iterable function object
 2026-08-22 12:24:47,572 - MiroBot - ERROR - error:96 - Agent tool find_duplicate_channels raised: No module named 'discord'
 2026-08-22 13:07:55,156 - MiroBot - ERROR - error:96 - Agent tool find_duplicate_channels raised: 'Ch' object has no attribute 'category_id'
+2026-08-22 13:27:13,926 - MiroBot - ERROR - error:96 - Agent tool delete_channel raised: local variable 'interaction' referenced before assignment
+2026-08-22 13:27:13,926 - MiroBot - ERROR - error:96 - Agent tool delete_channel raised: local variable 'interaction' referenced before assignment

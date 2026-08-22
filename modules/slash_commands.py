@@ -174,11 +174,33 @@ class SlashCommands(commands.Cog):
                 pass
 
             if gcfg.agent_enabled:
-                from core.agent_runtime import AgentRuntime
+                from core.agent_runtime import AgentRuntime, needs_confirmation
                 allow_dangerous = bool(
                     interaction.user.guild_permissions.administrator)
+
+                # Destructive plans need explicit human confirmation (V4 item 26)
+                confirmed = True
+                if allow_dangerous and needs_confirmation(actions):
+                    from ui.components import ConfirmView
+                    names = [str(a.get("name")) for a in actions if isinstance(a, dict)][:8]
+                    confirm_view = ConfirmView(
+                        interaction.user.id,
+                        "🧹 This plan includes **destructive actions**:\n"
+                        + ", ".join(f"`{n}`" for n in names)
+                        + "\n\nProceed with execution?",
+                        danger=True, timeout=30)
+                    await interaction.followup.send(
+                        "⚠️ Confirmation required before executing this plan.",
+                        view=confirm_view, ephemeral=True)
+                    await confirm_view.wait()
+                    confirmed = confirm_view.confirmed
+                    if not confirmed:
+                        return await interaction.followup.send(
+                            "❎ Cancelled — nothing was executed.", ephemeral=True)
+
                 runtime = AgentRuntime(self.bot, interaction.guild, interaction.user,
-                                       allow_dangerous=allow_dangerous)
+                                       allow_dangerous=allow_dangerous,
+                                       confirmed=confirmed)
                 # One persistent progress message — never repeated AI narration
                 progress_msg = None
 

@@ -267,9 +267,21 @@ Ensure no trailing commas, comments, or text outside JSON. Lines under 1500 char
             summary = result.get("summary", "I didn't quite catch that. Could you try again?")
             actions = result.get("actions", [])
 
-            # Execute actions if present
+            # Execute via the Agent Runtime — the summary is regenerated from
+            # actual execution results, never sent as-is after failures.
             if actions:
-                await self._execute_actions(message, actions)
+                try:
+                    final, exec_result = await self._execute_actions(message, result)
+                    if exec_result.failures:
+                        # Plan item 15: never send the pre-execution summary
+                        summary = (final.text if final and final.text
+                                   else "⚠️ Some actions could not be completed:\n"
+                                        + "\n".join(exec_result.failures[:5]))
+                    elif final and final.text:
+                        summary = final.text
+                except Exception as e:
+                    logger.error(f"Agent execution failed: {e}")
+                    summary = "⚠️ I couldn't complete that operation. The error was logged."
 
             # Store conversation
             session["messages"].append({"role": "user", "content": user_input})
@@ -390,43 +402,31 @@ Respond with JSON only:
 
         return True
 
-    async def _execute_actions(self, message: discord.Message, actions: list):
-        """Execute actions from AI response using ActionHandler."""
-        from actions import ActionHandler
+    async def _execute_actions(self, message: discord.Message, result: dict):
+        """Run the model's action plan through the Agent Runtime with the
+        speaker's real permissions. Returns (FinalAIResponse, AgentExecutionResult)."""
+        from core.agent_runtime import AgentRuntime
+        from agent.executor import Executor
 
-        if not hasattr(self.bot, 'action_handler'):
-            # Create action handler if not exists
-            self.bot.action_handler = ActionHandler(self.bot)
+        actions = [a for a in (result.get("actions") or []) if isinstance(a, dict)]
+        allow_dangerous = bool(getattr(message.author, "guild_permissions", None)
+                               and message.author.guild_permissions.administrator)
+        runtime = AgentRuntime(self.bot, message.guild, message.author,
+                               allow_dangerous=allow_dangerous)
+        # Speaker-context interaction: dispatch's admin gate applies to the
+        # actual human who typed the message, never the bot identity.
+        interaction = Executor.build_message_interaction(message)
+        return await runtime.run(
+            interaction,
+            str(message.content)[:2000],
+            "You are Miro Agent executing an operation requested in an AI channel.",
+            initial_result={"summary": str(result.get("summary") or ""),
+                            "actions": actions},
+        )
 
-        # Limit to first 3 actions (hard limit rule)
-        actions_to_execute = actions[:3]
+    async def _legacy_execute_actions_unused(self):
+        pass
 
-        if len(actions) > 3:
-            # Note in summary that more actions were requested
-            logger.info(f"AI requested {len(actions)} actions, executing first 3. {len(actions)-3} actions remaining.")
-
-        # Execute actions
-        for action in actions_to_execute:
-            try:
-                # Create a mock interaction for the action handler
-                mock_interaction = type('MockInteraction', (), {
-                    'guild': message.guild,
-                    'user': message.author,
-                    'followup': type('MockFollowup', (), {'send': lambda *args, **kwargs: None})()
-                })()
-
-                success, _ = await self.bot.action_handler.dispatch(
-                    mock_interaction,
-                    action["name"],
-                    action["parameters"]
-                )
-
-                if not success:
-                    logger.warning(f"Action {action['name']} failed to execute")
-
-            except Exception as e:
-                logger.error(f"Error executing action {action['name']}: {e}")
-    
     async def _chat_with_provider(self, guild_id: int, user_id: int, user_input: str,
                                 system_prompt: str, provider: AIProvider) -> dict:
         """Multi-AI Provider System - Chat with a specific AI provider."""
