@@ -67,13 +67,13 @@ class Executor:
             from actions import ScheduledTaskInteraction
             return ScheduledTaskInteraction(bot, guild_id)
         except Exception:
-            guild = bot.get_guild(guild_id) if hasattr(bot, "get_guild") else None
+            resolved_guild = bot.get_guild(guild_id) if hasattr(bot, "get_guild") else None
             bot_user = getattr(bot, "user", None)
 
             class _BotIdentity:
-                guild = guild
+                guild = resolved_guild
                 user = bot_user
-                channel = getattr(guild, "system_channel", None) if guild else None
+                channel = getattr(resolved_guild, "system_channel", None) if resolved_guild else None
                 response = None
                 followup = None
 

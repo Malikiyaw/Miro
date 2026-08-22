@@ -3189,21 +3189,52 @@ class ActionHandler:
         return completed > 0 or failed < len(per_item), receipt
 
     async def action_find_duplicate_channels(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
-        """Deterministic duplicate-channel finder. The agent decides what to do
-        with the verified result — it never invents duplicate-detection logic."""
-        name = str(params.get("name") or "").strip()
+        """Deterministic duplicate-channel finder. Reads REAL channel data via
+        ServerQueryEngine (fallback: direct guild scan), then applies the
+        deterministic matcher — the AI never invents duplicate logic."""
+        name = str(params.get("name") or params.get("channel_name") or "").strip()
         if not name:
             return False, {"error": "find_duplicate_channels requires 'name'."}
         from core.agent_runtime import find_duplicate_channels
         exclude = params.get("exclude_channel_id") or params.get("protected_channel_id")
-        data = find_duplicate_channels(interaction.guild, name, exclude)
+
+        # Prefer the real query engine so the tool genuinely executed a query
+        channels_payload = None
+        engine = getattr(self.bot, "server_query", None)
+        if engine is not None and hasattr(engine, "query_channels"):
+            try:
+                raw = await engine.query_channels(interaction.guild.id)
+                if isinstance(raw, dict):
+                    channels_payload = raw.get("channels") or raw.get("data") or []
+                elif isinstance(raw, list):
+                    channels_payload = raw
+            except Exception as e:
+                logger.warning(f"server_query.query_channels failed, using direct scan: {e}")
+
+        if channels_payload:
+            from agent.tools import find_duplicate_channels_from_list
+            norm = []
+            for c in channels_payload:
+                if not isinstance(c, dict):
+                    continue
+                cid = str(c.get("id") or "")
+                obj = interaction.guild.get_channel(int(cid)) if cid.isdigit() else None
+                norm.append({"id": cid,
+                             "name": obj.name if obj else str(c.get("name", "")),
+                             "category_id": str(c.get("category_id") or ""),
+                             "created_at": str(obj.created_at.isoformat()) if obj and getattr(obj, "created_at", None) else ""})
+            data = find_duplicate_channels_from_list(norm, name, exclude)
+        else:
+            data = find_duplicate_channels(interaction.guild, name, exclude)
+
         dup_count = len(data["duplicates"])
         return True, {
             "message": (f"{len(data['matches'])} channel(s) match '{name}': "
                         f"1 protected, {dup_count} duplicate(s) to remove"
                         if data["matches"] else f"No channels matching '{name}'."),
+            "target_name": data["target_name"],
+            "protected_channel_id": data["protected_channel_id"],
             "matches": data["matches"],
-            "protected_id": data["protected_id"],
             "duplicates": data["duplicates"],
         }
 

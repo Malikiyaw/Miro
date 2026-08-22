@@ -8,3 +8,8 @@
 2026-08-22 13:07:55,156 - MiroBot - ERROR - error:96 - Agent tool find_duplicate_channels raised: 'Ch' object has no attribute 'category_id'
 2026-08-22 13:27:13,926 - MiroBot - ERROR - error:96 - Agent tool delete_channel raised: local variable 'interaction' referenced before assignment
 2026-08-22 13:27:13,926 - MiroBot - ERROR - error:96 - Agent tool delete_channel raised: local variable 'interaction' referenced before assignment
+2026-08-22 13:49:38,783 - MiroBot - ERROR - error:96 - Agent tool find_duplicate_channels raised: name 'guild' is not defined
+2026-08-22 13:49:38,785 - MiroBot - ERROR - error:96 - Agent tool bulk_delete_channels raised: name 'guild' is not defined
+2026-08-22 13:50:09,177 - MiroBot - ERROR - error:96 - Agent tool find_duplicate_channels raised: name 'guild' is not defined
+2026-08-22 13:50:09,179 - MiroBot - ERROR - error:96 - Agent tool bulk_delete_channels raised: name 'guild' is not defined
+2026-08-22 13:52:11,707 - MiroBot - ERROR - error:96 - Agent tool find_duplicate_channels raised: name 'guild' is not defined

@@ -72,16 +72,48 @@ class AgentRuntime:
         self._signatures: List[str] = []
         self._nudges = 0
         self._original_request = ""
+        self._history: List[str] = []   # verified status lines for the live board
 
     async def _progress(self, text: str):
+        """One persistent message whose every line reflects REAL runtime state."""
+        lines = ["🤖 Miro Agent", "━━━━━━━━━━━━━━━━"]
+        lines.extend(self._history[-6:])
+        lines.append(text)
+        full = "\n".join(lines)
         if self.on_progress is None:
             return
         try:
-            out = self.on_progress(text)
+            out = self.on_progress(full[:1900])
             if asyncio.iscoroutine(out):
                 await asyncio.wait_for(out, timeout=5.0)
         except Exception as e:
             logger.debug(f"agent progress failed: {e}")
+
+    def final_response_gate(self, text: str, result: AgentExecutionResult) -> str:
+        """
+        Truth gate (plan items 20/28): a completion claim must match receipts.
+        PLANNED ≠ EXECUTED ≠ VERIFIED — only VERIFIED may be reported as done.
+        """
+        text = self._failure_aware(text or "", result)
+        if not result.receipts:
+            return text
+        failed = [r for r in result.receipts if not r.success]
+        verified = [r for r in result.receipts if r.success and r.verified]
+        low = (text or "").lower()
+        claims_success = any(w in low for w in
+                             ("deleted", "removed", "created", "completed",
+                              "done", "✅"))
+        acknowledges = any(w in low for w in
+                           ("failed", "❌", "could not", "couldn't", "unable",
+                            "not completed"))
+        if failed and claims_success and not acknowledges:
+            return self._receipt_summary(result)
+        if not failed and not verified and claims_success:
+            # claimed success but nothing was actually executed+verified
+            base = self._receipt_summary(result) or \
+                "⚠️ No actions were executed yet."
+            return f"{base}" + (f"\n\nModel note: {text[:200]}" if text else "")
+        return text
 
     def _receipt_summary(self, result: AgentExecutionResult) -> str:
         if not result.receipts:
@@ -114,6 +146,32 @@ class AgentRuntime:
             lines.append(f"✅ {result.completed_steps} step(s) did succeed and were verified.")
         return "\n".join(lines)
 
+    def _parse_turn(self, ai_result: Dict[str, Any]) -> tuple[str, List[Dict], Optional[str], str]:
+        """
+        Normalize BOTH contracts into (summary_text, actions, final_answer, intent).
+
+        V5 contract:  {intent, tool_calls, final_answer}
+        Legacy shape: {reasoning, summary, actions}
+        """
+        intent = str(ai_result.get("intent") or "").strip()
+        actions = [a for a in (ai_result.get("tool_calls")
+                               or ai_result.get("actions") or [])
+                   if isinstance(a, dict)]
+        final_answer = ai_result.get("final_answer")
+        if final_answer is not None and not isinstance(final_answer, str):
+            final_answer = str(final_answer)
+        summary = str(ai_result.get("summary") or "").strip()
+
+        # Hard gate (plan item 5): a final answer may not coexist with
+        # pending tool calls — the calls win, the "final" text is demoted
+        # to an internal plan note.
+        if actions and final_answer:
+            summary = summary or f"(plan while calling tools: {final_answer})"
+            final_answer = None
+        if not summary and final_answer is None:
+            summary = ""
+        return summary, actions, final_answer, intent
+
     async def run(self, interaction, user_request: str, system_prompt: str,
                   initial_result: Optional[dict] = None) -> tuple[FinalAIResponse, AgentExecutionResult]:
         self._original_request = user_request
@@ -131,7 +189,7 @@ class AgentRuntime:
                                  f"(internal plan, not yet executed): {summary}"})
 
         step = 0
-        await self._progress("🤖 Miro Agent\nStatus: Starting…")
+        await self._progress("🔎 Starting…")
 
         while True:
             # ---------------- PLAN ----------------
@@ -155,21 +213,25 @@ class AgentRuntime:
                     return FinalAIResponse(text="⚠️ Agent received an invalid response.",
                                            state=AgentState.FAILED), result
 
-                summary = str(ai_result.get("summary") or "").strip()
-                pending_actions = [a for a in (ai_result.get("actions") or [])
-                                   if isinstance(a, dict)]
+                summary, pending_actions, final_answer, intent = self._parse_turn(ai_result)
+                if intent:
+                    result.actions.append({"intent": intent})
 
                 if pending_actions:
                     if summary:
                         messages.append({"role": "assistant", "content":
                                          f"(internal plan, not yet executed): {summary}"})
+                    # V5 contract: final_answer is void while tools are pending
+                    final_answer = None
                 else:
-                    blocking = any(w in summary.lower() for w in
+                    blocking = any(w in (summary or "").lower() for w in
                                    ("cannot", "missing permission", "lacks",
                                     "not have permission", "failed to"))
                     has_work = any(o.success for o in result.observations)
+                    if final_answer:
+                        summary = summary or final_answer
                     if self._original_intent_actionable() and not blocking \
-                            and self._nudges < 3 and not has_work:
+                            and self._nudges < 3 and not has_work and not final_answer:
                         self._nudges += 1
                         messages.append({"role": "assistant", "content": summary})
                         messages.append({"role": "user", "content":
@@ -179,10 +241,12 @@ class AgentRuntime:
                     if self._original_intent_actionable() and not blocking:
                         receipt_text = self._receipt_summary(result)
                         if receipt_text:
-                            summary = (summary + "\n" + receipt_text).strip()
-                            summary = self._failure_aware(summary, result)
+                            base = summary if summary and not final_answer else (final_answer or "")
+                            merged = self.final_response_gate(base, result)
+                            summary = (merged + "\n" + receipt_text).strip()
                     elif self._original_intent_actionable() and not summary:
                         summary = "⚠️ I could not complete that action. No tool succeeded."
+                    summary = self.final_response_gate(summary, result)
                     result.final_state = AgentState.FAILED if blocking else AgentState.COMPLETED
                     job.status = result.final_state
                     job.completed_at = time.time()
@@ -270,7 +334,7 @@ class AgentRuntime:
                 self.state = AgentState.EXECUTING
                 job.status = AgentState.EXECUTING
                 job.last_tool = name
-                await self._progress(f"🤖 Miro Agent\n⚙️ Executing `{name}`… (step {step}/{self.max_steps})")
+                await self._progress(f"⚙️ Executing `{name}`… (step {step}/{self.max_steps})")
 
                 receipt = await self.executor.execute(interaction, name, params,
                                                       request_id=job.job_id)
@@ -301,7 +365,10 @@ class AgentRuntime:
 
                 marker = "✅" if (receipt.success and receipt.verified) else \
                     "⚠️" if receipt.success else "❌"
-                await self._progress(f"🤖 Miro Agent\n{marker} `{name}` — {obs.render()[:150]}")
+                self._history.append(
+                    f"{marker} `{name}`" +
+                    (f" — {receipt.message[:80]}" if not receipt.success else ""))
+                await self._progress(f"⏳ Observing result…")
                 messages.append({"role": "user", "content":
                                  f"OBSERVATION after `{name}`: {obs.render()}\n"
                                  f"If the goal is fully met, reply with the final summary and NO actions."})
