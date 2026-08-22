@@ -48,6 +48,8 @@ class SlashCommands(commands.Cog):
     ])
     async def configpanel(self, interaction: discord.Interaction, system: str):
         """Open configuration panel for a system."""
+        if not interaction.guild:
+            return await interaction.response.send_message("This command only works in servers.", ephemeral=True)
         panel = config_panels.get_config_panel(interaction.guild.id, system, self.bot)
         if not panel:
             return await interaction.response.send_message(f"❌ System '{system}' not found.", ephemeral=True)
@@ -155,6 +157,10 @@ class SlashCommands(commands.Cog):
         app_commands.Choice(name="👮 Staff Management (Shifts/Reviews)", value="staff_management"),
     ])
     async def system_panel(self, interaction: discord.Interaction, system: str):
+        if not interaction.guild:
+            return await interaction.response.send_message("This command only works in servers.", ephemeral=True)
+        # Panel construction reads server data — defer so Discord never times out
+        await interaction.response.defer()
         from modules.system_panels import open_system_panel
         await open_system_panel(interaction, system)
 

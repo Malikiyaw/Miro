@@ -2,3 +2,5 @@
 2026-08-21 21:07:03,927 - MiroBot - ERROR - error:96 - Job 1 (slow) failed permanently after 2 attempts: 
 2026-08-21 21:07:31,796 - MiroBot - ERROR - error:96 - Job 1 (slow) failed permanently after 2 attempts: 
 2026-08-22 10:02:58,979 - MiroBot - ERROR - error:96 - Panel action 'act4' failed: backend exploded
+2026-08-22 10:38:01,967 - MiroBot - ERROR - error:96 - Failed to build moderation panel: cannot unpack non-iterable function object
+2026-08-22 10:38:01,967 - MiroBot - ERROR - error:96 - Failed to build tickets panel: cannot unpack non-iterable function object

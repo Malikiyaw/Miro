@@ -50,6 +50,9 @@ class MiroBot(commands.Bot):
             proxy_auth=proxy_auth,
         )
 
+        # Never leave a slash command unanswered ("didn't respond in time")
+        self.tree.on_error = self._on_app_command_error
+
         # Initialize all systems
         self.economy = economy.EconomySystem(self)
         self.leveling = leveling.LevelingSystem(self)
@@ -518,6 +521,29 @@ class MiroBot(commands.Bot):
     async def on_error(self, event, *args, **kwargs):
         """Global error handler."""
         logger.error(f"Event error in {event}: {traceback.format_exc()}")
+
+    async def _on_app_command_error(self, interaction, error):
+        """
+        Slash-command safety net: Discord shows "The application did not
+        respond" whenever a command errors without replying. This guarantees
+        every failing command still answers the user.
+        """
+        try:
+            import discord.app_commands as app_commands
+            if isinstance(error, app_commands.CheckFailure):
+                msg = "🚫 You don't have permission to use this command here."
+            elif isinstance(error, app_commands.CommandOnCooldown):
+                msg = f"⏳ Slow down — try again in {error.retry_after:.1f}s."
+            else:
+                logger.error(f"App command error in /{getattr(getattr(interaction, 'command', None), 'name', '?')}: "
+                             f"{traceback.format_exc()}")
+                msg = "❌ Something went wrong running that command. The error was logged."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            logger.error(f"Failed to report app command error: {traceback.format_exc()}")
 
 # Create and run the bot
 if __name__ == "__main__":

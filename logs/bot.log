@@ -39,3 +39,5 @@
 2026-08-21 21:07:31,796 - MiroBot - DEBUG - debug:84 - Completed scheduled task 1
 2026-08-21 21:07:34,544 - MiroBot - INFO - info:88 - Task scheduler stopped
 2026-08-22 10:02:58,979 - MiroBot - ERROR - error:96 - Panel action 'act4' failed: backend exploded
+2026-08-22 10:38:01,967 - MiroBot - ERROR - error:96 - Failed to build moderation panel: cannot unpack non-iterable function object
+2026-08-22 10:38:01,967 - MiroBot - ERROR - error:96 - Failed to build tickets panel: cannot unpack non-iterable function object

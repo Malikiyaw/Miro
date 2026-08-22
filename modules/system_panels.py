@@ -66,7 +66,10 @@ def _count_key(bot, guild_id, key):
 
 
 def _metric_count(label, key):
-    return lambda bot, gid: (label, _count_key(bot, gid, key))
+    """(label, fn) tuple — fn(bot, guild_id) -> (label, count)."""
+    def fn(bot, gid):
+        return (label, _count_key(bot, gid, key))
+    return (label, fn)
 
 
 def _metric_liststatus(label, key, status):
@@ -75,7 +78,7 @@ def _metric_liststatus(label, key, status):
         if isinstance(value, list):
             return (label, sum(1 for v in value if isinstance(v, dict) and v.get(status) == status))
         return (label, 0)
-    return fn
+    return (label, fn)
 
 
 SYSTEM_GROUPS: Dict[str, dict] = {
@@ -348,7 +351,7 @@ class GroupPanelView(SystemPanelView):
         nav.callback = self._nav_select
         self.add_item(nav)
 
-        if self.tab.startswith("sub:"):
+        if self.tab == "sub":
             self._build_subsystem_actions(self._sub())
         elif self.tab == "overview":
             self._build_overview_actions()
@@ -622,7 +625,7 @@ class GroupPanelView(SystemPanelView):
 
     def build_embed(self) -> discord.Embed:
         title = f"{self.spec['emoji']} {self.spec['name']}"
-        if self.tab == "overview" or self.tab.startswith("sub:"):
+        if self.tab == "overview" or self.tab == "sub":
             return self._build_status_embed(title)
         if self.tab == "test":
             return self._build_test_embed(title)
@@ -794,15 +797,32 @@ async def run_diagnostics(bot, guild: discord.Guild, spec: dict):
 # --------------------------------------------------------------------------- #
 
 async def open_system_panel(interaction: discord.Interaction, group_key: str):
-    """Open (or re-open) the unified panel for a merged system group."""
+    """Open (or re-open) the unified panel for a merged system group.
+    Works whether or not the caller already deferred."""
     spec = SYSTEM_GROUPS.get(group_key)
     if spec is None:
-        await interaction.response.send_message(f"❌ Unknown system `{group_key}`.", ephemeral=True)
+        msg = f"❌ Unknown system `{group_key}`."
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
         return
-    view = GroupPanelView(interaction.client, interaction, group_key)
-    embed = view.build_embed()
-    await interaction.response.send_message(embed=embed, view=view)
     try:
-        view.message = await interaction.original_response()
+        view = GroupPanelView(interaction.client, interaction, group_key)
+        embed = view.build_embed()
+    except Exception as e:
+        logger.error(f"Failed to build {group_key} panel: {e}")
+        msg = f"❌ Could not build the {group_key} panel: {str(e)[:200]}"
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+        return
+    try:
+        if interaction.response.is_done():
+            view.message = await interaction.followup.send(embed=embed, view=view, wait=True)
+        else:
+            await interaction.response.send_message(embed=embed, view=view)
+            view.message = await interaction.original_response()
     except Exception:
         pass
