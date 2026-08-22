@@ -242,7 +242,7 @@ class ActionHandler:
     ALLOWED_ACTIONS = {
         "send_message", "send_embed", "add_role", "remove_role",
         "create_channel", "create_shop_channel", "delete_channel", "create_role", "delete_role",
-        "find_duplicate_channels",
+        "find_duplicate_channels", "bulk_delete_channels",
         "create_category", "edit_channel", "edit_role", "assign_role",
         "assign_role_by_name", "create_prefix_command", "create_command", "make_command", "add_command", "new_command", "delete_prefix_command",
         "setup_welcome", "setup_logging", "setup_verification", "setup_economy", "setup_leveling",
@@ -681,6 +681,12 @@ class ActionHandler:
             variations.append(name + '_member')
         for var in variations:
             if var in self.ALLOWED_ACTIONS:
+                # Safety rule (plan 15): destructive actions require an exact
+                # semantic match — fuzzy suffix variation must never land on
+                # an unrelated destructive action.
+                from core.action_meta import is_destructive
+                if name != var and is_destructive(var):
+                    continue
                 return var
         return original_name
 
@@ -2760,6 +2766,20 @@ class ActionHandler:
 
         channel = None
 
+        # Backend safety rule (plan 6): protected targets are refused even if
+        # the AI accidentally targets them. Names are search criteria; IDs are
+        # the execution target.
+        from core.action_meta import protected_targets, system_protected_channel_ids
+        if channel_id:
+            try:
+                cid = int(str(channel_id).strip().lstrip("<#").rstrip(">"))
+                if protected_targets.is_protected(guild.id, "channel", cid):
+                    return False, {"error": f"Channel {cid} is PROTECTED — backend refuses deletion."}
+                if str(cid) in system_protected_channel_ids(guild.id, guild):
+                    return False, {"error": f"Channel {cid} is used by an enabled Miro system and cannot be deleted."}
+            except (ValueError, TypeError):
+                pass
+
         # Resolve by ID if provided
         if channel_id:
             try:
@@ -3099,6 +3119,74 @@ class ActionHandler:
         ]
         await self._send_query_result(interaction, f"Server Info: {data['name']}", data.get("description", ""), fields)
         return True, None
+
+    async def action_bulk_delete_channels(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        """
+        Delete many channels BY ID with per-item status and verification.
+        Names are only search criteria (use find_duplicate_channels first);
+        the IDs here are the execution targets.
+        """
+        guild = interaction.guild
+        if not guild.me.guild_permissions.manage_channels:
+            return False, {"error": "Bot lacks manage_channels permission"}
+
+        channel_ids = params.get("channel_ids") or params.get("channels") or []
+        if isinstance(channel_ids, str):
+            channel_ids = [c.strip() for c in channel_ids.split(",") if c.strip()]
+        protected_channel_id = params.get("protected_channel_id") or params.get("exclude_channel_id")
+
+        from core.action_meta import protected_targets, system_protected_channel_ids
+        sys_protected = system_protected_channel_ids(guild.id, guild)
+
+        per_item = []
+        completed = failed = 0
+        for raw_id in channel_ids[:50]:  # hard cap
+            item = {"id": str(raw_id), "deleted": False, "verified": False, "error": ""}
+            try:
+                cid = int(str(raw_id).strip().lstrip("<#").rstrip(">"))
+            except (ValueError, TypeError):
+                item["error"] = "invalid id"
+                per_item.append(item); failed += 1; continue
+
+            if protected_channel_id and str(cid) == str(protected_channel_id):
+                item["error"] = "protected target — skipped"
+                per_item.append(item); continue
+            if protected_targets.is_protected(guild.id, "channel", cid):
+                item["error"] = "protected"
+                per_item.append(item); failed += 1; continue
+            if str(cid) in sys_protected:
+                item["error"] = "used by an enabled Miro system"
+                per_item.append(item); failed += 1; continue
+
+            channel = guild.get_channel(cid)
+            if channel is None:
+                # already gone counts as verified success (idempotent)
+                item.update(deleted=True, verified=True, error="already absent")
+                per_item.append(item); completed += 1; continue
+            try:
+                await channel.delete(reason="Miro AI bulk cleanup")
+            except Exception as e:
+                item["error"] = str(e)[:120]
+                per_item.append(item); failed += 1; continue
+
+            verified = guild.get_channel(cid) is None
+            item.update(deleted=True, verified=verified,
+                        error="" if verified else "Discord accepted delete but channel still present")
+            per_item.append(item)
+            if verified:
+                completed += 1
+            else:
+                failed += 1
+            await asyncio.sleep(0.4)  # gentle on the Discord API
+
+        receipt = {
+            "message": f"Deleted {completed}/{len(per_item)} channels ({failed} failed/skipped).",
+            "requested": len(channel_ids),
+            "completed": completed,
+            "failed": failed,
+            "per_item": per_item,
+        }
+        return completed > 0 or failed < len(per_item), receipt
 
     async def action_find_duplicate_channels(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
         """Deterministic duplicate-channel finder. The agent decides what to do

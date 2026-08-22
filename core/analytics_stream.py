@@ -20,6 +20,8 @@ class AnalyticsCollector:
         "message.created", "member.joined", "member.left",
         "moderation.action", "ticket.created", "ticket.closed",
         "automod.violation", "ai.request", "command.executed",
+        "action.verified",   # only EXECUTED + VERIFIED agent actions count
+        "action.unverified",
     )
 
     FLUSH_INTERVAL = 300  # 5 minutes

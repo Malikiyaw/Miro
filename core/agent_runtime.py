@@ -111,6 +111,7 @@ class AgentRuntime:
     async def run(self, interaction, user_request: str, system_prompt: str,
                   initial_result: Optional[dict] = None) -> tuple[FinalAIResponse, AgentExecutionResult]:
         result = AgentExecutionResult()
+        self._original_request = user_request
         messages: List[Dict[str, str]] = []
 
         # Seed with any plan the first AI turn already produced
@@ -147,6 +148,9 @@ class AgentRuntime:
                 summary = str(ai_result.get("summary") or "").strip()
                 pending_actions = [a for a in (ai_result.get("actions") or [])
                                    if isinstance(a, dict)]
+                if not summary and not pending_actions and step > 0:
+                    # Final answer must come from EXECUTION RECEIPTS (plan 25)
+                    summary = self._receipt_summary(result) or "Operation finished."
                 if summary and not pending_actions:
                     # Model says it's done — this is the final answer
                     result.final_state = AgentState.COMPLETED
@@ -174,6 +178,21 @@ class AgentRuntime:
                 params = action.get("parameters") if isinstance(action.get("parameters"), dict) else {}
                 result.actions.append({"name": name, "parameters": params})
 
+                # ---- SEMANTIC VALIDATION (hard rule, plan 2/14) ------------
+                # 'bulk_delete_messages' can never satisfy 'delete channels'.
+                from core.action_meta import validate_action
+                allowed, reason, suggested = validate_action(self._original_request, name)
+                if not allowed:
+                    obs = Observation(tool=name, params=params, success=False,
+                                      verified=False,
+                                      detail=f"REJECTED — {reason} Valid tools: {', '.join(suggested)}")
+                    result.observations.append(obs)
+                    result.failures.append(obs.render())
+                    messages.append({"role": "user", "content":
+                                     f"REJECTED ACTION `{name}`: {reason} "
+                                     f"Use one of these instead: {', '.join(f'`{s}`' for s in suggested)}. Replan."})
+                    continue
+
                 if name in DANGEROUS_TOOLS and not self.allow_dangerous:
                     obs = Observation(tool=name, params=params, success=False, verified=False,
                                       detail="refused: dangerous action requires explicit confirmation")
@@ -197,6 +216,16 @@ class AgentRuntime:
                     result.failures.append(obs.render())
                 self.state = AgentState.OBSERVING
 
+                # Analytics counts only EXECUTED + VERIFIED actions (plan 21)
+                bus = getattr(self.bot, "event_bus", None)
+                if bus is not None:
+                    try:
+                        asyncio.create_task(bus.publish(
+                            "action.verified" if (success and verified) else "action.unverified",
+                            guild_id=self.guild.id, tool=name, success=success))
+                    except Exception:
+                        pass
+
                 # Feed the observation back so the model can replan
                 messages.append({"role": "user",
                                  "content": f"OBSERVATION after `{name}`: {obs.render()}"})
@@ -212,6 +241,21 @@ class AgentRuntime:
                     state=AgentState.CANCELLED), result
 
     # ------------------------------------------------------------------ #
+    def _receipt_summary(self, result: AgentExecutionResult) -> str:
+        """Factual final answer built ONLY from execution receipts."""
+        if not result.observations:
+            return ""
+        verified = [o for o in result.observations if o.success and o.verified]
+        unverified = [o for o in result.observations if o.success and not o.verified]
+        failed = [o for o in result.observations if not o.success]
+        lines = ["✅ Operation complete." if not failed else "⚠️ Operation finished with issues.",
+                 f"Executed: {len(verified)} verified"
+                 + (f", {len(unverified)} unverified" if unverified else "")
+                 + (f", {len(failed)} failed" if failed else "")]
+        for o in failed:
+            lines.append(f"❌ `{o.tool}` — {o.detail[:100]}")
+        return "\n".join(lines)
+
     async def _execute(self, interaction, name: str, params: Dict[str, Any]):
         handler = getattr(self.bot, "action_handler", None)
         if handler is None:
