@@ -42,3 +42,6 @@
 2026-08-22 10:38:01,967 - MiroBot - ERROR - error:96 - Failed to build moderation panel: cannot unpack non-iterable function object
 2026-08-22 10:38:01,967 - MiroBot - ERROR - error:96 - Failed to build tickets panel: cannot unpack non-iterable function object
 2026-08-22 12:24:47,572 - MiroBot - ERROR - error:96 - Agent tool find_duplicate_channels raised: No module named 'discord'
+2026-08-22 13:07:55,156 - MiroBot - ERROR - error:96 - Agent tool find_duplicate_channels raised: 'Ch' object has no attribute 'category_id'
+2026-08-22 13:08:36,839 - MiroBot - WARNING - warning:92 - [AGENT] retrying query_channels after retryable error: tool timed out after 0s
+2026-08-22 13:08:38,545 - MiroBot - WARNING - warning:92 - [AGENT] retrying flaky_tool after retryable error: connection reset temporarily

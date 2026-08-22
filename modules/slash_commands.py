@@ -179,12 +179,28 @@ class SlashCommands(commands.Cog):
                     interaction.user.guild_permissions.administrator)
                 runtime = AgentRuntime(self.bot, interaction.guild, interaction.user,
                                        allow_dangerous=allow_dangerous)
+                # One persistent progress message — never repeated AI narration
+                progress_msg = None
+
+                async def on_progress(text: str):
+                    nonlocal progress_msg
+                    try:
+                        if progress_msg is None:
+                            progress_msg = await interaction.followup.send(text[:1900])
+                        else:
+                            await progress_msg.edit(content=text[:1900])
+                    except Exception:
+                        pass
+                runtime.on_progress = on_progress
+
                 final, exec_result = await runtime.run(
                     interaction, text[:2000],
                     ("You are Miro, a helpful and proactive Discord server assistant "
                      "executing an operation for a trusted administrator."),
                     initial_result=result)
                 reply = final.text or "Done."
+                # Final answer goes out as a fresh message; the progress
+                # message above stays as the live execution log.
                 if exec_result.observations:
                     lines = []
                     for obs in exec_result.observations:

@@ -480,7 +480,7 @@ Only suggest actions from this list. Do not invent new actions:
         return registry.default_model(provider)
 
     async def chat(self, guild_id: int, user_id: int, user_input: str, system_prompt: str,
-                   persist: bool = False) -> Dict[str, Any]:
+                   persist: bool = False, extra_messages: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         """
         Communicates with the LLM using a primary provider, with automatic fallback
         to secondary providers (DashScope, OpenRouter) if the primary hits a quota limit (429/403).
@@ -521,7 +521,8 @@ Only suggest actions from this list. Do not invent new actions:
             try:
                 result = await self._chat_internal(guild_id, user_id, user_input, system_prompt,
                                                    api_key, provider, enhanced_input,
-                                                   model_override=model_override)
+                                                   model_override=model_override,
+                                                   extra_messages=extra_messages)
                 # Empty even after regeneration -> treat like a provider
                 # failure and try the next key/provider in the chain.
                 if isinstance(result, dict) and result.pop("_miro_empty", False):
@@ -753,7 +754,7 @@ Only suggest actions from this list. Do not invent new actions:
                 raise AIClientError(status, msg) from cause
             raise Exception(f'AI failed after multiple attempts: {cause}') from cause
 
-    async def _chat_internal(self, guild_id: int, user_id: int, user_input: str, system_prompt: str, api_key: str, provider: str, enhanced_input: str = None, model_override: Optional[str] = None) -> Dict[str, Any]:
+    async def _chat_internal(self, guild_id: int, user_id: int, user_input: str, system_prompt: str, api_key: str, provider: str, enhanced_input: str = None, model_override: Optional[str] = None, extra_messages: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         """Internal execution for a single AI provider request."""
         # Validate guild context
         if guild_id is None:
@@ -794,6 +795,17 @@ Only suggest actions from this list. Do not invent new actions:
         
         messages = [{"role": "system", "content": enhanced_prompt}]
         messages.extend(combined_context)
+
+        # Agent runtime context: nudges, observations, prior plan turns.
+        # Without this channel the runtime's state never reached the model —
+        # the root cause of narration-only agent behavior.
+        if extra_messages:
+            for m in extra_messages:
+                role = m.get("role", "user")
+                content = str(m.get("content", ""))[:6000]
+                if content:
+                    messages.append({"role": "assistant" if role == "assistant" else role,
+                                     "content": content})
 
         # Use enhanced input if provided by the enhancement layer
         final_input = enhanced_input if enhanced_input else user_input
