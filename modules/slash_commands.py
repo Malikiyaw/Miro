@@ -61,10 +61,22 @@ class SlashCommands(commands.Cog):
         )
 
         emoji, description = config_panels.get_system_info(system)
-        embed.add_field(name=f"{emoji} System", value=description, inline=False)
 
-        config = panel.get_config()
-        if config:
+        # Panels imported from feature modules (verification, economy, ...)
+        # don't share ConfigPanelView's accessor — fall back to their real
+        # storage key instead of crashing.
+        config = None
+        try:
+            config = panel.get_config()
+        except AttributeError:
+            key_overrides = {
+                "verification": "verification_config", "economy": "economy_config",
+                "leveling": "leveling_config", "tickets": "tickets_config",
+                "suggestions": "suggestions_config", "giveaways": "giveaways_config",
+            }
+            key = key_overrides.get(system, f"{system}_config")
+            config = dm.get_guild_data(interaction.guild.id, key, {})
+        if isinstance(config, dict) and config:
             settings = "\n".join(f"**{k}:** `{str(v)[:50]}`" for k, v in list(config.items())[:8])
             embed.add_field(name="Current Settings", value=settings or "_No settings_", inline=False)
 
