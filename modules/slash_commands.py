@@ -217,6 +217,7 @@ class SlashCommands(commands.Cog):
         app_commands.Choice(name="🔨 Moderation (Auto-Mod/Warnings)", value="moderation"),
         app_commands.Choice(name="⚙️ Automation (Auto-Responder/Reaction Roles)", value="automation"),
         app_commands.Choice(name="👮 Staff Management (Shifts/Reviews)", value="staff_management"),
+        app_commands.Choice(name="🤖 Miro AI (Provider/Model/Agent)", value="ai"),
     ])
     async def system_panel(self, interaction: discord.Interaction, system: str):
         if not interaction.guild:

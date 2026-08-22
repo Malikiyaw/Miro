@@ -228,39 +228,40 @@ class CoreCommands(commands.Cog):
         if not valid:
             signup = self.providers.key_signup_url(provider)
             await interaction.followup.send(
-                f"❌ {reason}\nGet a valid key here: <{signup}>",
+                f"❌ {reason}\nGet a valid key here: <{signup}>\n**Nothing was changed.**",
                 ephemeral=True,
             )
             return
 
-        # Store encrypted BEFORE testing so the key is saved even if the test hiccups
-        dm.set_guild_api_key(interaction.guild.id, api_key, provider)
-        # Make sure requests route to the provider this key belongs to
-        dm.update_guild_data(interaction.guild.id, "active_provider", provider)
-
+        # Test FIRST — an invalid key must never be stored or activated
         ok, detail, latency_ms = await self.providers.test_key(provider, api_key)
         masked = AIProviderRegistry.mask_key(api_key)
-        if ok:
+        if not ok:
             embed = discord.Embed(
-                title=f"✅ Key saved & verified — {self.providers.display(provider)}",
-                description=f"Key {masked} works ({detail}).",
-                color=discord.Color.green(),
-            )
-            embed.add_field(name="Latency", value=f"{latency_ms:.0f} ms", inline=True)
-            embed.add_field(name="Active model", value=f"`{self._active_model(interaction.guild.id)}`", inline=True)
-            embed.set_footer(text="This key is now the primary AI backend for this server.")
-        else:
-            embed = discord.Embed(
-                title=f"⚠️ Key saved but verification failed — {self.providers.display(provider)}",
-                description=f"Key {masked} was stored encrypted, but the provider said: *{detail}*.",
-                color=discord.Color.orange(),
+                title=f"❌ API key test failed — {self.providers.display(provider)}",
+                description=f"Provider: **{provider}**\nReason: *{detail}*\n\n**Nothing was changed.**",
+                color=discord.Color.red(),
             )
             embed.add_field(
                 name="What to do",
-                value=f"Double-check the key at <{self.providers.key_signup_url(provider)}> and re-run `/config key`, "
-                      f"or run `/config test` later. Other stored keys remain as automatic fallbacks.",
+                value=f"Double-check the key at <{self.providers.key_signup_url(provider)}> and try again.",
                 inline=False,
             )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        # Verified — now encrypt, store, and activate
+        dm.set_guild_api_key(interaction.guild.id, api_key, provider)
+        dm.update_guild_data(interaction.guild.id, "active_provider", provider)
+
+        embed = discord.Embed(
+            title=f"✅ Connected — {self.providers.display(provider)}",
+            description=f"Key {masked} verified and saved encrypted ({detail}).",
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Latency", value=f"{latency_ms:.0f} ms", inline=True)
+        embed.add_field(name="Active model", value=f"`{self._active_model(interaction.guild.id)}`", inline=True)
+        embed.set_footer(text="This key is now the primary AI backend for this server.")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @config.command(name="clearkey", description="Remove a stored API key for this server")
@@ -313,7 +314,7 @@ class CoreCommands(commands.Cog):
         embed.set_footer(text="/config provider · /config model · /config key · /config test · /config clearkey")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @config.command(name="test", description="Send a live test request through the active AI configuration")
+    @config.command(name="test", description="Run full AI diagnostics for this server")
     async def config_test(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         if not self._admin_check(interaction):
@@ -324,55 +325,99 @@ class CoreCommands(commands.Cog):
         provider = self._active_provider(guild_id)
         model = self._active_model(guild_id)
         key = self._provider_key(guild_id, provider)
-
-        if not key:
-            await interaction.followup.send(
-                f"❌ No API key available for **{provider}**. Store one with `/config key` first.",
-                ephemeral=True,
-            )
-            return
-
         registry = self.providers
-        chat_url = registry.chat_base_url(provider)
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": "Reply with exactly: MIRO ONLINE"}],
-            "max_tokens": 20,
-        }
-        started = time.perf_counter()
-        try:
-            timeout = aiohttp.ClientTimeout(total=30, connect=10)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(chat_url, json=payload, headers=registry._auth_headers(provider, key)) as resp:
-                    latency = (time.perf_counter() - started) * 1000
-                    body = await resp.json(content_type=None)
-                    if resp.status == 200:
-                        text = (
-                            body.get("choices", [{}])[0].get("message", {}).get("content", "")
-                            or body.get("content", [{}])[0].get("text", "")
-                        ).strip()
-                        embed = discord.Embed(title="🧪 Live test passed", color=discord.Color.green())
-                        embed.add_field(name="Route", value=f"{registry.display(provider)} · `{model}`", inline=False)
-                        embed.add_field(name="Latency", value=f"{latency:.0f} ms", inline=True)
-                        embed.add_field(name="Response", value=(text or "*(empty response)*")[:500], inline=True)
-                    else:
-                        err = str(body.get("error", {}).get("message", ""))[:300] if isinstance(body, dict) else ""
-                        embed = discord.Embed(title="🧪 Live test failed", color=discord.Color.red())
-                        embed.add_field(name="Route", value=f"{registry.display(provider)} · `{model}`", inline=False)
-                        embed.add_field(name="HTTP status", value=str(resp.status), inline=True)
-                        embed.add_field(name="Error", value=err or "unknown error", inline=False)
-                        if resp.status in (401, 403):
-                            embed.add_field(name="Likely cause", value="Invalid/expired API key — re-set it with `/config key`.", inline=False)
-                        elif resp.status == 404 or "model" in err.lower():
-                            embed.add_field(name="Likely cause", value="Unknown model for this provider — pick one from `/config model` autocomplete.", inline=False)
-                        elif resp.status == 429:
-                            embed.add_field(name="Likely cause", value="Rate limit / quota exhausted on this key.", inline=False)
-        except Exception as e:
-            latency = (time.perf_counter() - started) * 1000
-            embed = discord.Embed(title="🧪 Live test failed", color=discord.Color.red())
-            embed.add_field(name="Route", value=f"{registry.display(provider)} · `{model}`", inline=False)
-            embed.add_field(name="Error", value=f"Connection failed after {latency:.0f} ms:\n{str(e)[:300]}", inline=False)
+        rows: list[tuple[str, bool, str]] = []
 
+        def add(label: str, ok: bool, detail: str = ""):
+            rows.append((label, ok, detail))
+
+        # 1. Guild configuration
+        from core.guild_ai_config import GuildAIConfig
+        gcfg = GuildAIConfig.load(guild_id)
+        add("Guild config", True,
+            f"provider={gcfg.provider or 'auto'} · model={gcfg.model or 'default'} · "
+            f"max_tokens={gcfg.max_tokens} · agent={'on' if gcfg.agent_enabled else 'off'}")
+
+        # 2. API key
+        if not key:
+            add("API key", False, f"no key stored or env-configured for {provider}")
+        else:
+            ok, detail, latency = await registry.test_key(provider, key)
+            add("API key", ok, f"{detail} ({latency:.0f} ms)" if latency else detail)
+
+        # 3. Model availability
+        known = None
+        if key:
+            known = await registry.list_models(provider, key)
+        if known:
+            add("Model available", model in known,
+                f"`{model}` " + ("in provider catalog" if model in known
+                                 else f"NOT in catalog ({len(known)} models)"))
+        else:
+            add("Model available", True, "catalog unavailable — skipping strict check")
+
+        # 4. Real completion through the canonical pipeline
+        started = time.perf_counter()
+        if not key:
+            add("Text response", False, "skipped — no key")
+        else:
+            chat_url = registry.chat_base_url(provider)
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": "Reply with exactly: MIRO ONLINE"}],
+                "max_tokens": 20,
+            }
+            try:
+                timeout = aiohttp.ClientTimeout(total=30, connect=10)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(chat_url, json=payload,
+                                            headers=registry._auth_headers(provider, key)) as resp:
+                        latency = (time.perf_counter() - started) * 1000
+                        body = await resp.json(content_type=None)
+                        if resp.status == 200:
+                            from core.ai_response import normalize_provider_response, watchdog_check
+                            norm = normalize_provider_response(body, provider=provider, model=model)
+                            ok, why = watchdog_check(norm.text)
+                            snippet = norm.text.strip()[:80] or why
+                            add("Text response", norm.ok and ok,
+                                f"{norm.status.value} · {latency:.0f} ms · “{snippet}”")
+                        else:
+                            err = ""
+                            if isinstance(body, dict):
+                                err = str((body.get("error") or {}).get("message", ""))[:120]
+                            add("Text response", False, f"HTTP {resp.status}: {err or 'unknown'}")
+            except Exception as e:
+                add("Text response", False, f"connection failed: {str(e)[:120]}")
+
+        # 5. Tool/agent capability (provider supports function calling?)
+        tool_capable = provider in ("openai", "openrouter", "groq", "mistral",
+                                    "deepseek", "together", "cerebras", "sambanova")
+        agent_detail = "supported" if tool_capable else "not supported by this provider"
+        if not gcfg.agent_enabled:
+            agent_detail += " · agent disabled in guild ai_config"
+        add("Tools / Agent", tool_capable and gcfg.agent_enabled, agent_detail)
+
+        # Fallback chain visibility
+        chain = getattr(self.bot.ai, "_get_all_guild_keys", lambda gid: [])(guild_id)
+        fallback_names = [c["provider"] for c in chain][1:]
+        add("Fallbacks", bool(fallback_names),
+            ", ".join(fallback_names) if fallback_names else "none configured")
+
+        # Render
+        lines = []
+        all_ok = True
+        for label, ok, detail in rows:
+            mark = "🟢" if ok else "🔴"
+            if not ok:
+                all_ok = False
+            lines.append(f"{mark} **{label}** — {detail}" if detail else f"{mark} **{label}**")
+        embed = discord.Embed(
+            title="🤖 Miro AI Diagnostics",
+            description="\n".join(lines)[:4000],
+            color=discord.Color.green() if all_ok else discord.Color.orange(),
+        )
+        embed.add_field(name="Route", value=f"{registry.display(provider)} · `{model}`", inline=False)
+        embed.set_footer(text=f"Guild: {interaction.guild.name}")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @config.command(name="prefix", description="Set the server command prefix")

@@ -256,6 +256,23 @@ SYSTEM_GROUPS: Dict[str, dict] = {
              "metrics": [_metric_count("Mapped messages", "reaction_roles")]},
         ],
     },
+    "ai": {
+        "emoji": "🤖", "name": "Miro AI",
+        "subsystems": [
+            {"key": "ai", "label": "AI Engine", "module_attr": "ai",
+             "config_key": "ai_config",
+             "settings": [
+                 {"key": "model", "label": "Model (blank = provider default)", "type": "str"},
+                 {"key": "fallback_models", "label": "Fallback models (comma-separated)", "type": "str"},
+                 {"key": "max_tokens", "label": "Max tokens per response", "type": "int"},
+                 {"key": "temperature", "label": "Temperature (0.0-2.0)", "type": "float"},
+                 {"key": "timeout", "label": "Request timeout (seconds)", "type": "int"},
+             ],
+             "toggles": [{"key": "agent_enabled", "label": "Agent mode"},
+                         {"key": "enabled", "label": "AI enabled"}],
+             "metrics": []},
+        ],
+    },
     "staff_management": {
         "emoji": "👮", "name": "Staff Management",
         "subsystems": [

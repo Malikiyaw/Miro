@@ -12,14 +12,16 @@ from vector_memory import vector_memory
 from actions import ActionHandler
 from blueprints import BLUEPRINT
 from ai_providers import AIProviderRegistry
+from core.ai_response import new_request_id, classify_http_error
 
 logger = logging.getLogger(__name__)
 
 class AIClientError(Exception):
     """Custom exception for AI client errors that should not be retried (e.g., 4xx)."""
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, error_type=None):
         self.status = status
         self.message = message
+        self.error_type = error_type  # core.ai_response.AIErrorType when known
         super().__init__(f"AI API Client Error ({status}): {message}")
 
 def is_retryable_exception(exception):
@@ -230,7 +232,29 @@ class AIClient:
             logger.warning(f"analyze_content failed: {e}")
             return {"is_scam": False, "confidence": 0.0, "reason": str(e)[:100]}
 
-    async def _build_enhanced_prompt(self, system_prompt: str, guild_id: int, user_id: int = 0) -> str:
+    @staticmethod
+    def _needs_server_context(prompt: str) -> bool:
+        """
+        Heuristic: does this request need live server state?
+        Action requests and server questions -> yes. Small talk, math,
+        definitions, coding help -> no (skips the whole introspection pass).
+        """
+        low = prompt.lower()
+        # Always inject when the model is expected to act or report on the guild
+        action_signals = (
+            "create ", "delete ", "remove ", "add ", "set up", "setup", "make ",
+            "rename ", "move ", "lock", "ban ", "kick ", "mute ", "warn ",
+            "channel", "role", "server info", "member count", "who is online",
+            "leaderboard", "list ", "how many", "my server", "this server",
+            "giveaway", "ticket", "welcome", "verify", "announce", "schedule",
+            "config", "panel", "permissions",
+        )
+        if any(sig in low for sig in action_signals):
+            return True
+        return False
+
+    async def _build_enhanced_prompt(self, system_prompt: str, guild_id: int, user_id: int = 0,
+                                     user_input: str = "") -> str:
         """Build system prompt with action success/failure data, command usage, and live server context."""
         from data_manager import dm
         from server_query import ServerQueryEngine
@@ -248,8 +272,10 @@ Only suggest actions from this list. Do not invent new actions:
 """
         base_prompt += allowed_actions_section
 
-        # Add LIVE SERVER CONTEXT - automatically inject server state for every request
-        if guild_id and guild_id > 0:
+        # Add LIVE SERVER CONTEXT — but only when the request plausibly needs
+        # it. Fetching channels/roles/members for "what is 2+2" wasted seconds
+        # and tokens on every message.
+        if guild_id and guild_id > 0 and self._needs_server_context(user_input or system_prompt):
             try:
                 query_engine = ServerQueryEngine(self.bot)
                 server_info = await query_engine.query_server_info(guild_id)
@@ -847,12 +873,29 @@ Only suggest actions from this list. Do not invent new actions:
             if provider in ["openai", "openrouter", "gemini", "groq", "mistral", "deepseek", "qwen", "dashscope", "cerebras", "sambanova", "together"] and prompt_has_json:
                 payload["response_format"] = {"type": "json_object"}
 
-        timeout = aiohttp.ClientTimeout(total=120, connect=10)
+        # Per-guild AI configuration is the source of truth for limits
+        try:
+            from core.guild_ai_config import GuildAIConfig
+            guild_cfg = GuildAIConfig.load(guild_id)
+            payload["max_tokens"] = int(guild_cfg.max_tokens or 8000)
+            payload["temperature"] = float(guild_cfg.temperature if guild_cfg.temperature is not None else 0.7)
+            request_timeout_s = int(guild_cfg.timeout or 120)
+        except Exception as cfg_err:
+            logger.debug(f"guild ai_config unavailable, using defaults: {cfg_err}")
+            payload.setdefault("max_tokens", 8000)
+            payload.setdefault("temperature", 0.7)
+            request_timeout_s = 120
+        if provider == "anthropic":
+            payload["max_tokens"] = payload.get("max_tokens", 8000)
+
+        request_id = new_request_id()
+        started = time.perf_counter()
+        timeout = aiohttp.ClientTimeout(total=request_timeout_s, connect=10)
         async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
             provider_url = self.base_urls.get(provider)
             if not provider_url:
                 raise Exception(f"Unsupported AI provider: {provider}")
-            
+
             # Gemini specific URL handling (expects key in query param)
             if provider == "gemini":
                 if "?" in provider_url:
@@ -860,13 +903,16 @@ Only suggest actions from this list. Do not invent new actions:
                 else:
                     provider_url += f"?key={api_key.strip()}"
 
-            logger.info(f"AI Handshake Executing: {provider} | URL: {provider_url.split('?')[0]}")
+            logger.info(f"AI Handshake Executing: {provider} | Model: {active_model} | req={request_id}")
 
             async with session.post(provider_url, json=payload, allow_redirects=False) as resp:
+                latency_ms = (time.perf_counter() - started) * 1000
                 if resp.status != 200:
                     text = await resp.text()
-                    logger.error(f"AI API Error from {provider} ({resp.status}): {text}")
-                    
+                    error_type = classify_http_error(resp.status, text)
+                    logger.error(f"[AI {request_id}] {provider} error {resp.status} "
+                                 f"({error_type.value}) after {latency_ms:.0f}ms: {text[:300]}")
+
                     # One-provider fallback for 403 on flagship models
                     if resp.status == 403 and ("Unpurchased" in text or "denied" in text.lower()) and "turbo" not in active_model:
                         fallback = "qwen-turbo" if provider in ["qwen", "dashscope"] else "gpt-3.5-turbo"
@@ -875,42 +921,39 @@ Only suggest actions from this list. Do not invent new actions:
                         async with session.post(provider_url, json=payload, allow_redirects=False) as fallback_resp:
                             if fallback_resp.status == 200:
                                 return await self._parse_and_handle_response(session, provider, provider_url, payload, messages, fallback_resp)
-                    
-                    raise AIClientError(resp.status, text)
-                
-                return await self._parse_and_handle_response(session, provider, provider_url, payload, messages, resp)
 
-    async def _parse_and_handle_response(self, session, provider, provider_url, payload, messages, resp) -> dict:
-        """Parses the AI response and handles any requested actions (like web search)."""
+                    raise AIClientError(resp.status, text, error_type=error_type)
+
+                return await self._parse_and_handle_response(session, provider, provider_url, payload, messages, resp,
+                                                             request_id=request_id, started=started)
+
+    async def _parse_and_handle_response(self, session, provider, provider_url, payload, messages, resp,
+                                         request_id: str = None, started: float = None) -> dict:
+        """Normalizes the provider response through the canonical pipeline, then
+        handles any requested actions (like web search)."""
+        from core.ai_response import (normalize_provider_response, watchdog_check,
+                                      AIErrorType)
         res_data = await resp.json()
-        
-        # Flexible extraction for different provider formats
-        try:
-            if 'choices' in res_data:
-                choice = res_data['choices'][0] if res_data['choices'] else {}
-                msg_obj = choice.get('message', {}) or {}
-                ai_msg = msg_obj.get('content') or ""
-                finish_reason = choice.get('finish_reason', "")
-            elif 'content' in res_data:
-                ai_msg = res_data['content'][0].get('text') or ""
-                finish_reason = "anthropic"
-            elif 'message' in res_data and 'content' in res_data['message']:
-                ai_msg = res_data['message']['content'] or ""
-                finish_reason = "message"
-            else:
-                logger.error(f"Unknown response structure from {provider}: {res_data}")
-                raise KeyError(f"No valid 'choices' or 'content' in response from {provider}")
-        except (KeyError, IndexError, TypeError) as e:
-            logger.error(f"Failed to parse {provider} response: {e}\nData: {str(res_data)[:400]}")
-            raise
+        latency_ms = (time.perf_counter() - started) * 1000 if started else 0.0
+        request_id = request_id or new_request_id()
+        active_model = payload.get("model", "")
 
-        if not str(ai_msg).strip():
-            # Blank completions are diagnosable: log why the model stopped
-            logger.warning(f"[AI EMPTY] {provider} returned blank content "
-                           f"(finish_reason={finish_reason}, keys={list(res_data.keys())[:5]}, "
-                           f"json_mode={'response_format' in payload})")
+        # ---- NORMALIZE: every provider shape -> one AIResponse ----
+        normalized = normalize_provider_response(res_data, provider=provider, model=active_model,
+                                                 request_id=request_id, latency_ms=latency_ms)
+        ai_msg = normalized.text
 
-        logger.debug(f"AI Handshake Successful | Provider: {provider} | Response Length: {len(ai_msg)}")
+        if not ai_msg.strip():
+            logger.warning(f"[AI {request_id}] blank via {normalized.raw_shape} "
+                           f"(finish={normalized.finish_reason or '?'})")
+        else:
+            # Watchdog: never deliver whitespace or raw error markers
+            ok, why = watchdog_check(ai_msg)
+            if not ok:
+                logger.warning(f"[AI {request_id}] watchdog rejected content: {why}")
+                ai_msg = ""
+
+        logger.info(f"[AI {request_id}] {normalized.describe()}")
 
         # Try to parse JSON from AI message with retry
         res_json = self.extract_json(ai_msg)
