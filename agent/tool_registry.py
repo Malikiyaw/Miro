@@ -12,6 +12,7 @@ class ToolRegistry:
     DESCRIPTIONS = {
         "find_duplicate_channels": "Find duplicate channels by name; returns protected + duplicates with exact IDs",
         "bulk_delete_channels": "Delete many channels BY ID with per-item verification",
+        "cleanup_duplicate_channels": "ONE-CALL duplicate cleanup: find -> protect -> delete -> verify each deletion",
         "delete_channel": "Delete one channel by ID",
         "create_channel": "Create a text channel",
         "edit_channel": "Edit a channel (name/topic/position)",

@@ -45,6 +45,10 @@ ACTION_META: Dict[str, Dict[str, Any]] = {
     "find_duplicate_channels": {"object_type": "channel", "operation": "query", "danger": "none",
                               "permission": "none", "batch": False, "confirm": False,
                               "verify": "none"},
+    "cleanup_duplicate_channels": {"object_type": "channel", "operation": "delete",
+                              "danger": "high", "permission": "manage_channels",
+                              "batch": True, "confirm": True,
+                              "verify": "channels_gone"},
     # ---- messages ----
     "send_message":          {"object_type": "message", "operation": "create", "danger": "low",
                               "permission": "send_messages", "batch": False, "confirm": False,

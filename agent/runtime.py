@@ -22,19 +22,23 @@ from agent.tool_registry import tool_registry
 from agent.executor import Executor
 from agent.verifier import Verifier
 from agent import recovery
+from agent.observer import Observer
+from agent.completion_gate import CompletionGate
 
+# V6 tool tiers + policies (agent/policies.py): 15 steps, retry policy in recovery
 DANGEROUS_TOOLS = {
     "delete_channel", "delete_role", "delete_messages", "bulk_delete_channels",
+    "cleanup_duplicate_channels",
     "ban_user", "kick_user", "softban_user", "timeout_user", "setup_moderation",
 }
 MUTATING_TOOLS = {
     "create_channel", "create_role", "edit_channel", "edit_role", "send_message",
     "reply_message", "add_reaction", "send_notification", "assign_role",
     "remove_role", "create_webhook", "connect_systems", "move_system",
-    "bulk_delete_channels",
+    "bulk_delete_channels", "cleanup_duplicate_channels",
 }
 
-MAX_AGENT_STEPS = 10
+from agent.policies import MAX_AGENT_STEPS, MAX_TOOL_RETRIES
 CONFIRM_THRESHOLD_ACTIONS = 3
 
 
@@ -68,6 +72,8 @@ class AgentRuntime:
         self.planner = Planner(bot)
         self.executor = Executor(bot)
         self.verifier = Verifier(bot)
+        self.observer = Observer()
+        self.gate = CompletionGate()
         self.state = AgentState.PLANNING
         self._signatures: List[str] = []
         self._nudges = 0
@@ -125,6 +131,10 @@ class AgentRuntime:
                  f"Executed: {len(verified)} verified"
                  + (f", {len(unverified)} unverified" if unverified else "")
                  + (f", {len(failed)} failed" if failed else "")]
+        # Surface the backend's own result messages for verified actions
+        for r in verified[-3:]:
+            if r.message:
+                lines.append(f"• {r.message[:150]}")
         for r in failed:
             lines.append(f"❌ `{r.action}` [{r.error_type.value}] — {r.message[:100]}")
         return "\n".join(lines)
@@ -246,7 +256,18 @@ class AgentRuntime:
                             summary = (merged + "\n" + receipt_text).strip()
                     elif self._original_intent_actionable() and not summary:
                         summary = "⚠️ I could not complete that action. No tool succeeded."
-                    summary = self.final_response_gate(summary, result)
+
+                    # ---- COMPLETION GATE (V6 items 8-9) --------------------
+                    # AI summaries are untrusted. Deliver only when
+                    # goal_completed / actions_successful / state_verified hold;
+                    # otherwise the factual receipt report is sent instead.
+                    actionable = self._original_intent_actionable()
+                    verdict = self.gate.evaluate(result, summary, actionable)
+                    if actionable and not verdict.allowed:
+                        logger.warning(f"[AGENT] completion gate blocked response: {verdict.reason}")
+                        summary = self._receipt_summary(result) or (
+                            "⚠️ The operation could not be verified as complete.")
+
                     result.final_state = AgentState.FAILED if blocking else AgentState.COMPLETED
                     job.status = result.final_state
                     job.completed_at = time.time()
@@ -337,7 +358,8 @@ class AgentRuntime:
                 await self._progress(f"⚙️ Executing `{name}`… (step {step}/{self.max_steps})")
 
                 receipt = await self.executor.execute(interaction, name, params,
-                                                      request_id=job.job_id)
+                                                      request_id=job.job_id,
+                                                      retries=MAX_TOOL_RETRIES - 1)
                 self.state = AgentState.VERIFYING
                 job.status = AgentState.VERIFYING
                 if receipt.success:
@@ -363,15 +385,9 @@ class AgentRuntime:
                     except Exception:
                         pass
 
-                marker = "✅" if (receipt.success and receipt.verified) else \
-                    "⚠️" if receipt.success else "❌"
-                self._history.append(
-                    f"{marker} `{name}`" +
-                    (f" — {receipt.message[:80]}" if not receipt.success else ""))
-                await self._progress(f"⏳ Observing result…")
-                messages.append({"role": "user", "content":
-                                 f"OBSERVATION after `{name}`: {obs.render()}\n"
-                                 f"If the goal is fully met, reply with the final summary and NO actions."})
+                obs.marker_line = self.observer.record(obs)
+                await self._progress(self.observer.board("⏳ Observing result…"))
+                messages.append(self.observer.observation_message(obs))
 
             self.state = AgentState.PLANNING
             if step >= self.max_steps:

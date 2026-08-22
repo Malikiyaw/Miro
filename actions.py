@@ -242,7 +242,7 @@ class ActionHandler:
     ALLOWED_ACTIONS = {
         "send_message", "send_embed", "add_role", "remove_role",
         "create_channel", "create_shop_channel", "delete_channel", "create_role", "delete_role",
-        "find_duplicate_channels", "bulk_delete_channels",
+        "find_duplicate_channels", "bulk_delete_channels", "cleanup_duplicate_channels",
         "create_category", "edit_channel", "edit_role", "assign_role",
         "assign_role_by_name", "create_prefix_command", "create_command", "make_command", "add_command", "new_command", "delete_prefix_command",
         "setup_welcome", "setup_logging", "setup_verification", "setup_economy", "setup_leveling",
@@ -3187,6 +3187,71 @@ class ActionHandler:
             "per_item": per_item,
         }
         return completed > 0 or failed < len(per_item), receipt
+
+    async def action_cleanup_duplicate_channels(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        """
+        High-level reliable single-call pipeline (V6 items 13-14):
+        query -> identify duplicates -> protect target -> delete -> verify.
+        The agent makes ONE call; the backend does the entire flow safely.
+        """
+        guild = interaction.guild
+        if not guild.me.guild_permissions.manage_channels:
+            return False, {"error": "Bot lacks Manage Channels permission.",
+                           "error_type": "MISSING_PERMISSION"}
+
+        name = str(params.get("name") or params.get("channel_name") or "").strip()
+        protected_id = str(params.get("protected_channel_id")
+                           or params.get("exclude_channel_id") or "")
+        if not name:
+            return False, {"error": "cleanup_duplicate_channels requires 'name'."}
+
+        from core.agent_runtime import find_duplicate_channels
+        data = find_duplicate_channels(guild, name, protected_channel_id or None)
+        duplicates = [m["id"] for m in data["duplicates"]]
+
+        from core.action_meta import system_protected_channel_ids
+        sys_protected = system_protected_channel_ids(guild.id, guild)
+
+        deleted, verified, failed = 0, 0, []
+        for dup in data["duplicates"]:
+            cid = int(dup["id"])
+            ch = guild.get_channel(cid)
+            if ch is None:
+                deleted += 1; verified += 1   # idempotent
+                continue
+            if dup["id"] in sys_protected:
+                failed.append({"id": dup["id"], "name": dup["name"],
+                               "reason": "used by an enabled Miro system"})
+                continue
+            try:
+                await ch.delete(reason="Miro AI duplicate cleanup")
+            except Exception as e:
+                failed.append({"id": dup["id"], "name": dup["name"],
+                               "reason": str(e)[:120]})
+                continue
+            deleted += 1
+            if guild.get_channel(cid) is None:   # verify against live state
+                verified += 1
+            else:
+                failed.append({"id": dup["id"], "name": dup["name"],
+                               "reason": "delete accepted but channel still present"})
+            await asyncio.sleep(0.4)
+
+        kept = data["kept"]["name"] if data["kept"] else None
+        receipt = {
+            "message": (f"Cleanup complete: {deleted} deleted, {verified} verified, "
+                        f"{len(failed)} failed."
+                        + (f" Preserved: #{kept}" if kept else "")),
+            "target_name": name,
+            "protected_channel": data["protected_channel"],
+            "requested": len(duplicates),
+            "deleted": deleted,
+            "failed": len(failed),
+            "verified": verified,
+            "failed_items": failed[:10],
+        }
+        success = verified > 0 or not duplicates
+        return success, receipt
 
     async def action_find_duplicate_channels(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
         """Deterministic duplicate-channel finder. Reads REAL channel data via

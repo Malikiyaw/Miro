@@ -2,16 +2,13 @@
 import asyncio
 from typing import Tuple
 
-RETRYABLE_MARKERS = ("timeout", "timed out", "rate limit", "429", "network",
-                     "temporarily", "502", "503", "connection")
+from agent.policies import is_retryable_error, MAX_TOOL_RETRIES
+
+DEFAULT_ATTEMPTS = MAX_TOOL_RETRIES - 1  # initial attempt + up to 2 retries
 
 
-def is_retryable_error(error_text: str) -> bool:
-    low = (error_text or "").lower()
-    return any(m in low for m in RETRYABLE_MARKERS)
-
-
-async def with_retry(run, policy_attempts: int = 1, backoff: float = 1.5) -> Tuple[bool, dict]:
+async def with_retry(run, policy_attempts: int = DEFAULT_ATTEMPTS,
+                     backoff: float = 1.5) -> Tuple[bool, dict]:
     """run() -> (success, info). Retries only when the error is transient."""
     success, info = await run()
     attempts = 0
