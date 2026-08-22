@@ -138,6 +138,26 @@ class SlashCommands(commands.Cog):
             else:
                 await interaction.channel.send(chunk)
 
+    # Unified system panels: /system <group>
+    @app_commands.command(name="system", description="Open the unified control panel for a system")
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(system="Which system panel to open")
+    @app_commands.choices(system=[
+        app_commands.Choice(name="👤 Member Management (Verification/Welcome/Leave)", value="member_management"),
+        app_commands.Choice(name="💰 Progression (Economy/Leveling)", value="progression"),
+        app_commands.Choice(name="🎫 Tickets", value="tickets"),
+        app_commands.Choice(name="💡 Suggestions", value="suggestions"),
+        app_commands.Choice(name="🎁 Giveaways", value="giveaways"),
+        app_commands.Choice(name="📢 Communications (Announcements/Reminders)", value="communications"),
+        app_commands.Choice(name="🛡️ Anti-Raid", value="anti_raid"),
+        app_commands.Choice(name="🔨 Moderation (Auto-Mod/Warnings)", value="moderation"),
+        app_commands.Choice(name="⚙️ Automation (Auto-Responder/Reaction Roles)", value="automation"),
+        app_commands.Choice(name="👮 Staff Management (Shifts/Reviews)", value="staff_management"),
+    ])
+    async def system_panel(self, interaction: discord.Interaction, system: str):
+        from modules.system_panels import open_system_panel
+        await open_system_panel(interaction, system)
+
     # Economy commands
     @app_commands.command(name="balance", description="Check your coin balance")
     async def balance(self, interaction: discord.Interaction):

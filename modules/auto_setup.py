@@ -131,8 +131,9 @@ class AutoSetupSystem:
         """Get description for a system."""
         descriptions = {
             "verification": "CAPTCHA verification to prevent bots",
-            "anti_raid": "Automatic raid detection and lockdown",
+            "anti_raid": "Automatic raid detection, lockdown, and emergency controls",
             "guardian": "Bot token detection and removal",
+            "automod": "Automated message moderation (13 rule types)",
             "auto_mod": "Automated message moderation",
             "warnings": "User warning and punishment system",
             "economy": "Coins, shop, and gambling system",
@@ -391,11 +392,20 @@ class AutoSetupSystem:
             logger.error(f"Welcome setup failed: {e}")
             return False
 
+    # Systems whose runtime module reads a different key than f"{system}_config"
+    CONFIG_KEY_OVERRIDES = {
+        "automod": "automod_config",
+        "auto_mod": "auto_mod_config",
+        "warnings": "warning_config",
+        "reaction_roles": "reaction_roles",
+    }
+
     async def setup_generic_system(self, guild, system, user) -> bool:
         """Generic setup for systems without specific setup logic."""
         try:
             config = {"enabled": True}
-            dm.update_guild_data(guild.id, f"{system}_config", config)
+            key = self.CONFIG_KEY_OVERRIDES.get(system, f"{system}_config")
+            dm.update_guild_data(guild.id, key, config)
             return True
         except Exception as e:
             logger.error(f"Generic setup failed for {system}: {e}")
@@ -577,19 +587,19 @@ class CategorySelectView(discord.ui.View):
         self.auto_setup = auto_setup
         self.guild_id = guild_id
 
-        # Add category buttons
+        # Add category buttons (5 per row max — 10 groups use rows 0-1)
         categories = SystemCategory.get_all_categories()
         for i, category in enumerate(categories):
-            button = CategoryButton(category, auto_setup)
+            button = CategoryButton(category, auto_setup, row=i // 5)
             self.add_item(button)
 
 class CategoryButton(discord.ui.Button):
-    def __init__(self, category, auto_setup):
+    def __init__(self, category, auto_setup, row: int = 0):
         super().__init__(
             label=category["name"],
             emoji=category["emoji"],
             style=discord.ButtonStyle.secondary,
-            row=0
+            row=row
         )
         self.category = category
         self.auto_setup = auto_setup
@@ -611,8 +621,13 @@ class SystemSelectView(discord.ui.View):
             self.add_item(button)
 
         # Add control buttons
+        self.add_item(InstallGroupButton(self, row=4))
         self.add_item(InstallSelectedButton(self, row=4))
         self.add_item(BackButton(auto_setup, guild_id, row=4))
+
+    def toggle_all(self):
+        """Mark every system in this group as selected."""
+        self.selected_systems = list(self.category["systems"])
 
 class SystemButton(discord.ui.Button):
     def __init__(self, system, parent_view):
@@ -632,6 +647,22 @@ class SystemButton(discord.ui.Button):
             self.style = discord.ButtonStyle.success
 
         await interaction.response.edit_message(view=self.parent_view)
+
+class InstallGroupButton(discord.ui.Button):
+    """One-click install of every system in the merged group."""
+    def __init__(self, parent_view, row=4):
+        super().__init__(
+            label="Install Entire Group",
+            emoji="📦",
+            style=discord.ButtonStyle.primary,
+            row=row
+        )
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.toggle_all()
+        await self.parent_view.auto_setup.start_installation(
+            interaction, self.parent_view.selected_systems)
 
 class InstallSelectedButton(discord.ui.Button):
     def __init__(self, parent_view, row=0):
