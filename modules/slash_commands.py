@@ -120,9 +120,15 @@ class SlashCommands(commands.Cog):
         if error:
             return await interaction.followup.send(f"⚠️ AI error: {str(error)[:500]}")
 
-        reply = (result.get("summary") or result.get("response") or "").strip()
+        # Pull the actual answer from whichever field the model used
+        reply = ""
+        for key in ("summary", "response", "content", "message", "reply", "answer", "text"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                reply = value.strip()
+                break
         if not reply:
-            reply = "*(The AI returned an empty response — try rephrasing your message.)*"
+            reply = "*(The AI didn't produce a readable answer — please try rephrasing your message.)*"
 
         # Discord hard-limits messages to 2000 chars; chunk long replies
         for i in range(0, len(reply), 2000):

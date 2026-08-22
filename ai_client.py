@@ -488,6 +488,12 @@ Only suggest actions from this list. Do not invent new actions:
                 result = await self._chat_internal(guild_id, user_id, user_input, system_prompt,
                                                    api_key, provider, enhanced_input,
                                                    model_override=model_override)
+                # Empty even after regeneration -> treat like a provider
+                # failure and try the next key/provider in the chain.
+                if isinstance(result, dict) and result.pop("_miro_empty", False):
+                    logger.warning(f"[AI FALLBACK] Provider {provider} produced an empty response. Trying next available fallback...")
+                    last_error = Exception("empty response from provider")
+                    continue
                 self.report_success()
                 consecutive_429 = 0
                 if persist:
@@ -511,7 +517,7 @@ Only suggest actions from this list. Do not invent new actions:
         self.report_failure()
         if last_error:
             raise last_error
-        
+
         raise Exception("AI failed to respond after trying all configured fallback providers.")
 
     def report_success(self):
@@ -521,6 +527,50 @@ Only suggest actions from this list. Do not invent new actions:
 
     def report_failure(self):
         self.consecutive_failures = getattr(self, "consecutive_failures", 0) + 1
+
+    @staticmethod
+    def _synthesize_summary(result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Fill in a missing 'summary' from wherever the model actually put its
+        answer: alternate text keys, the action plan, or descriptive fields.
+        Prevents '(The AI returned an empty response)' when the model replies
+        with structured JSON but no summary field.
+        """
+        if not isinstance(result, dict):
+            return result
+        if str(result.get("summary") or "").strip():
+            return result  # already has a real summary
+
+        for key in ("response", "message", "content", "answer", "text", "reply"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                out = dict(result)
+                out["summary"] = value.strip()
+                return out
+
+        # Action plan without words: describe what it intends to do
+        actions = result.get("actions")
+        if isinstance(actions, list) and actions:
+            described = []
+            for action in actions[:5]:
+                if isinstance(action, dict):
+                    name = str(action.get("name") or "").strip()
+                    params = action.get("parameters") or {}
+                    detail = ", ".join(str(v) for v in list(params.values())[:2] if v)
+                    described.append(f"{name}({detail})" if detail else name)
+            if any(described):
+                out = dict(result)
+                out["summary"] = "Here's my plan — " + "; ".join(filter(None, described))
+                return out
+
+        for key in ("description", "title", "reasoning", "walkthrough"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                out = dict(result)
+                out["summary"] = value.strip()
+                return out
+
+        return result
 
     @staticmethod
     async def _persist_exchange(guild_id: int, user_id: int, user_input: str, result: Dict[str, Any]):
@@ -843,6 +893,32 @@ Only suggest actions from this list. Do not invent new actions:
 
         # Try to parse JSON from AI message with retry
         res_json = self.extract_json(ai_msg)
+
+        # Models often answer with structured fields but no 'summary'
+        # (action plans, response/description keys...). Surface the real
+        # content instead of returning an empty reply to the user.
+        res_json = self._synthesize_summary(res_json)
+
+        # Provider returned nothing usable at all: force one regeneration,
+        # and if that is still empty, flag it so chat() falls through to the
+        # next provider instead of delivering "(empty response)".
+        if not str(res_json.get("summary") or "").strip():
+            if not payload.get("_retry_attempt", False):
+                logger.warning(f"Empty AI content from {provider}; forcing one regeneration")
+                messages.append({"role": "user", "content":
+                                 "Your previous message was empty. Respond now with a direct, complete answer."})
+                payload["messages"] = messages
+                payload["_retry_attempt"] = True
+                async with session.post(provider_url, json=payload, allow_redirects=False) as retry_resp:
+                    if retry_resp.status == 200:
+                        out = await self._parse_and_handle_response(session, provider, provider_url, payload, messages, retry_resp)
+                        if str(out.get("summary") or "").strip():
+                            return out
+                    else:
+                        logger.error(f"AI regeneration failed ({retry_resp.status})")
+            result = {"summary": "", "_miro_empty": True}
+            logger.warning(f"[AI FALLBACK] {provider} returned an empty response even after regeneration")
+            return result
 
         # If invalid JSON and not already a retry, attempt one retry
         if not self._validate_json_response(res_json) and not payload.get("_retry_attempt", False):
