@@ -839,7 +839,11 @@ Only suggest actions from this list. Do not invent new actions:
             # Add system message back for OpenAI compatible providers
             payload["messages"] = messages
             # Only force JSON response format if prompt contains 'json' (required by most providers)
-            prompt_has_json = 'json' in system_prompt.lower() or any('json' in str(m.get('content','')).lower() for m in messages[:3])
+            # Only force JSON mode when the SYSTEM PROMPT actually asks for
+            # structured output. Scanning conversation history for the word
+            # "json" made /bot requests silently return empty completions on
+            # several providers (json_object + no structured intent = blank).
+            prompt_has_json = 'json' in system_prompt.lower()
             if provider in ["openai", "openrouter", "gemini", "groq", "mistral", "deepseek", "qwen", "dashscope", "cerebras", "sambanova", "together"] and prompt_has_json:
                 payload["response_format"] = {"type": "json_object"}
 
@@ -883,17 +887,28 @@ Only suggest actions from this list. Do not invent new actions:
         # Flexible extraction for different provider formats
         try:
             if 'choices' in res_data:
-                ai_msg = res_data['choices'][0]['message']['content']
+                choice = res_data['choices'][0] if res_data['choices'] else {}
+                msg_obj = choice.get('message', {}) or {}
+                ai_msg = msg_obj.get('content') or ""
+                finish_reason = choice.get('finish_reason', "")
             elif 'content' in res_data:
-                ai_msg = res_data['content'][0]['text']
+                ai_msg = res_data['content'][0].get('text') or ""
+                finish_reason = "anthropic"
             elif 'message' in res_data and 'content' in res_data['message']:
-                ai_msg = res_data['message']['content']
+                ai_msg = res_data['message']['content'] or ""
+                finish_reason = "message"
             else:
                 logger.error(f"Unknown response structure from {provider}: {res_data}")
                 raise KeyError(f"No valid 'choices' or 'content' in response from {provider}")
         except (KeyError, IndexError, TypeError) as e:
-            logger.error(f"Failed to parse {provider} response: {e}\nData: {res_data}")
+            logger.error(f"Failed to parse {provider} response: {e}\nData: {str(res_data)[:400]}")
             raise
+
+        if not str(ai_msg).strip():
+            # Blank completions are diagnosable: log why the model stopped
+            logger.warning(f"[AI EMPTY] {provider} returned blank content "
+                           f"(finish_reason={finish_reason}, keys={list(res_data.keys())[:5]}, "
+                           f"json_mode={'response_format' in payload})")
 
         logger.debug(f"AI Handshake Successful | Provider: {provider} | Response Length: {len(ai_msg)}")
 
@@ -905,10 +920,21 @@ Only suggest actions from this list. Do not invent new actions:
         # content instead of returning an empty reply to the user.
         res_json = self._synthesize_summary(res_json)
 
-        # Provider returned nothing usable at all: force one regeneration,
-        # and if that is still empty, flag it so chat() falls through to the
-        # next provider instead of delivering "(empty response)".
+        # Provider returned nothing usable at all. Known cause: json_object
+        # mode silently producing blanks — retry the SAME provider once
+        # without it before giving up on this provider.
         if not str(res_json.get("summary") or "").strip():
+            if "response_format" in payload:
+                payload.pop("response_format", None)
+                logger.warning(f"[AI] {provider}: blank with json mode; retrying once WITHOUT response_format")
+                async with session.post(provider_url, json=payload, allow_redirects=False) as nojson_resp:
+                    if nojson_resp.status == 200:
+                        out = await self._parse_and_handle_response(session, provider, provider_url, payload, messages, nojson_resp)
+                        if str(out.get("summary") or "").strip():
+                            return out
+                    else:
+                        logger.error(f"[AI] {provider} no-json-mode retry failed ({nojson_resp.status})")
+
             if not payload.get("_retry_attempt", False):
                 logger.warning(f"Empty AI content from {provider}; forcing one regeneration")
                 messages.append({"role": "user", "content":
@@ -923,7 +949,7 @@ Only suggest actions from this list. Do not invent new actions:
                     else:
                         logger.error(f"AI regeneration failed ({retry_resp.status})")
             result = {"summary": "", "_miro_empty": True}
-            logger.warning(f"[AI FALLBACK] {provider} returned an empty response even after regeneration")
+            logger.warning(f"[AI FALLBACK] {provider} returned an empty response even after retries")
             return result
 
         # If invalid JSON and not already a retry, attempt one retry

@@ -136,6 +136,10 @@ class SlashCommands(commands.Cog):
             elif "Timeout" in name or "timeout" in str(e).lower():
                 msg = ("⏱️ The AI took too long to answer. Please try again — "
                        "it usually works on the second attempt.")
+            elif "empty response" in str(e).lower():
+                msg = ("🤖 The AI model kept returning blank answers. This usually clears up on "
+                       "retry — if it persists, an admin can run `/config test` or pick another "
+                       "model via `/config model`.")
             else:
                 logger.error(f"/bot AI request failed for user {interaction.user.id}: {e}")
                 msg = ("⚠️ I couldn't complete that request. Please try again in a minute — "
