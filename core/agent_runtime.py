@@ -1,9 +1,4 @@
-"""V8 public AgentRuntime entrypoint and hard backend completion wrapper.
-
-The underlying runtime performs planning/execution/observation. This wrapper adds
-V8 request classification and a final backend truth check so an actionable
-request can never escape as COMPLETED without verified mutation receipts.
-"""
+"""V8 public AgentRuntime entrypoint and backend completion wrapper."""
 from agent.runtime import AgentRuntime as _AgentRuntime
 from agent.runtime import needs_confirmation, MAX_AGENT_STEPS, DANGEROUS_TOOLS
 from agent.state import (
@@ -12,6 +7,7 @@ from agent.state import (
 )
 from agent.tools import find_duplicate_channels, validate_params
 from agent.request_classifier import classify_request
+from agent.completion_gate import CompletionGate
 
 
 class AgentRuntime(_AgentRuntime):
@@ -31,36 +27,25 @@ class AgentRuntime(_AgentRuntime):
         result.request_class = classification.kind.value
         result.requested_count = classification.requested_count
 
-        # V8 hard invariant: an actionable request is never COMPLETED unless
-        # every effective mutation receipt is successful and verified.
-        mutations = result.mutation_receipts
-        fully_verified = bool(mutations) and all(
-            r.success and r.verified for r in mutations
-        )
         if classification.execution_required:
-            if classification.requested_count > 0:
-                fully_verified = fully_verified and len(
-                    [r for r in mutations if r.success and r.verified]
-                ) == classification.requested_count
-
-            if not fully_verified:
+            gate = CompletionGate().evaluate(result, getattr(final, "text", ""), True)
+            if not gate.allowed:
                 result.final_state = AgentState.FAILED
                 if result.job:
                     result.job.status = AgentState.FAILED
-                verified = sum(1 for r in mutations if r.success and r.verified)
+                mutations = gate._effective_mutations(result)
+                verified_units = sum(gate._units(r) for r in mutations if r.success and r.verified)
                 failed = [r for r in mutations if not r.success]
                 unverified = [r for r in mutations if r.success and not r.verified]
+                expected = classification.requested_count or sum(gate._units(r) for r in mutations)
                 lines = ["⚠️ Operation not completed — backend verification did not pass."]
-                expected = classification.requested_count or len(mutations)
                 lines.append(
-                    f"Verified: {verified}/{expected}"
+                    f"Verified: {verified_units}/{expected}"
                     + (f" | Failed: {len(failed)}" if failed else "")
                     + (f" | Unverified: {len(unverified)}" if unverified else "")
                 )
                 for receipt in failed[:5]:
-                    lines.append(
-                        f"❌ `{receipt.action}` [{receipt.error_type.value}] — {receipt.message[:140]}"
-                    )
+                    lines.append(f"❌ `{receipt.action}` [{receipt.error_type.value}] — {receipt.message[:140]}")
                 if not mutations:
                     lines.append("❌ No mutation tool call was executed.")
                 final = FinalAIResponse(
