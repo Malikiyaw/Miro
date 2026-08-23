@@ -1,0 +1,91 @@
+"""V8 execution-first regression tests.
+
+These tests stay provider/Discord independent so CI can prove the core contract
+without needing a live bot connection.
+"""
+from agent.completion_gate import CompletionGate
+from agent.request_classifier import RequestClass, classify_request
+from agent.state import AgentExecutionResult, ErrorType, Receipt
+
+
+def receipt(action, *, success=True, verified=True, parameters=None):
+    return Receipt(
+        action=action,
+        success=success,
+        verified=verified,
+        error_type=ErrorType.NONE if success else ErrorType.UNKNOWN,
+        message="ok" if success else "failed",
+        parameters=parameters or {},
+    )
+
+
+def test_delete_three_is_execution_required_and_multi_step():
+    result = classify_request("Delete the 3 duplicate warned channels")
+    assert result.kind == RequestClass.MULTI_STEP_MUTATION
+    assert result.execution_required is True
+    assert result.requested_count == 3
+
+
+def test_create_channel_is_mutation():
+    result = classify_request("Create a staff channel")
+    assert result.kind == RequestClass.MUTATION
+    assert result.execution_required is True
+
+
+def test_find_duplicates_is_read_only():
+    result = classify_request("Find the duplicate channels")
+    assert result.kind == RequestClass.READ_ONLY
+    assert result.execution_required is False
+
+
+def test_text_only_mutation_has_no_completion_receipt():
+    result = AgentExecutionResult(execution_required=True, request_class="MUTATION")
+    verdict = CompletionGate().evaluate(result, "I'll create the channel.", actionable=True)
+    assert verdict.allowed is False
+    assert verdict.state_verified is False
+
+
+def test_three_verified_mutations_complete():
+    result = AgentExecutionResult(
+        execution_required=True,
+        request_class="MULTI_STEP_MUTATION",
+        requested_count=3,
+        receipts=[
+            receipt("delete_channel", parameters={"channel_id": "1"}),
+            receipt("delete_channel", parameters={"channel_id": "2"}),
+            receipt("delete_channel", parameters={"channel_id": "3"}),
+        ],
+    )
+    verdict = CompletionGate().evaluate(result, "Deleted and verified all 3 channels.", actionable=True)
+    assert verdict.allowed is True
+    assert verdict.state_verified is True
+
+
+def test_two_of_three_verified_is_partial_failure():
+    result = AgentExecutionResult(
+        execution_required=True,
+        request_class="MULTI_STEP_MUTATION",
+        requested_count=3,
+        receipts=[
+            receipt("delete_channel", parameters={"channel_id": "1"}),
+            receipt("delete_channel", parameters={"channel_id": "2"}),
+            receipt("delete_channel", success=False, verified=False, parameters={"channel_id": "3"}),
+        ],
+    )
+    verdict = CompletionGate().evaluate(result, "2 of 3 channels were verified.", actionable=True)
+    assert verdict.allowed is False
+    assert verdict.state_verified is False
+
+
+def test_recovered_attempt_uses_latest_receipt():
+    params = {"channel_id": "1"}
+    result = AgentExecutionResult(
+        execution_required=True,
+        request_class="MUTATION",
+        receipts=[
+            receipt("delete_channel", success=False, verified=False, parameters=params),
+            receipt("delete_channel", success=True, verified=True, parameters=params),
+        ],
+    )
+    verdict = CompletionGate().evaluate(result, "Channel deleted and verified.", actionable=True)
+    assert verdict.allowed is True
