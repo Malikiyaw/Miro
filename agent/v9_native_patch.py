@@ -15,5 +15,7 @@ def install():
             if not isinstance(args,dict): args=action.get('arguments') if isinstance(action.get('arguments'),dict) else {}
             normalized.append({**action,'parameters':args})
         return summary,normalized,final_answer,intent
-    AgentRuntime._parse_turn=parse
+    # Must be a staticmethod: assigned onto the class it would otherwise
+    # receive `self`, breaking every _parse_turn call with a TypeError.
+    AgentRuntime._parse_turn=staticmethod(parse)
     return True

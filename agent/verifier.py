@@ -48,6 +48,17 @@ class Verifier:
                 return await _fetch_channel(guild, channel_id) is None
 
             if name in ("bulk_delete_channels", "cleanup_duplicate_channels"):
+                if name == "cleanup_duplicate_channels":
+                    # High-level tool: params are name + protected_channel_id.
+                    # Re-run the deterministic matcher against LIVE state —
+                    # every non-protected duplicate must be gone.
+                    nm = str(params.get("name") or params.get("channel_name") or "").strip()
+                    if not nm:
+                        return False
+                    from agent.tools import find_duplicate_channels
+                    data = find_duplicate_channels(guild, nm,
+                                                   params.get("protected_channel_id"))
+                    return not data["duplicates"]
                 ids = params.get("channel_ids") or params.get("channels") or []
                 if not isinstance(ids, list) or not ids:
                     return False

@@ -213,10 +213,16 @@ class Executor:
         et = ErrorType.NONE if success else (
             classify_error(error_text) if error_text else ErrorType.UNKNOWN
         )
+        try:
+            tool_meta = self.get(name)
+            target_type = (tool_meta.get("metadata") or {}).get(
+                "object_type", tool_meta.get("object_type", ""))
+        except Exception:
+            target_type = ""
         return Receipt(
             action=name,
             target_id=target_id,
-            target_type=self.get(name)["object_type"],
+            target_type=target_type,
             success=bool(success),
             verified=False,
             error_type=et,

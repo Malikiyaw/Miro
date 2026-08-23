@@ -61,6 +61,13 @@ class Guild:
         cid = int(cid)
         return next((c for c in self.channels if c.id == cid), None)
 
+    async def fetch_channel(self, cid):
+        """Live Discord lookup: raises NotFound-style when truly gone."""
+        ch = self.get_channel(cid)
+        if ch is None:
+            raise type("NotFound", (Exception,), {})()
+        return ch
+
     def apply_discord_deletion(self, cid):
         """Simulates Discord really deleting: only then does state change."""
         ch = self.get_channel(cid)
