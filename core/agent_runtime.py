@@ -28,8 +28,9 @@ class AgentRuntime(_AgentRuntime):
         result.requested_count = classification.requested_count
 
         if classification.execution_required:
-            gate = CompletionGate().evaluate(result, getattr(final, "text", ""), True)
-            if not gate.allowed:
+            gate = CompletionGate()
+            verdict = gate.evaluate(result, getattr(final, "text", ""), True)
+            if not verdict.allowed:
                 result.final_state = AgentState.FAILED
                 if result.job:
                     result.job.status = AgentState.FAILED
