@@ -232,6 +232,15 @@ class AgentRuntime:
 
                     verdict = self.gate.evaluate(result, summary, classification.execution_required)
                     if classification.execution_required and not verdict.allowed:
+                        # Confirmation pauses are legitimate: discovery ran,
+                        # nothing failed, and the model asked permission.
+                        asks = "?" in (summary or "")
+                        no_failures = not any(not o.success for o in result.observations)
+                        has_verified_queries = any(o.success for o in result.observations)
+                        if asks and no_failures:
+                            result.final_state = AgentState.PLANNING
+                            job.status = AgentState.PLANNING
+                            return FinalAIResponse(text=summary, state=AgentState.PLANNING), result
                         summary = self._receipt_summary(result) or "⚠️ The operation could not be verified as complete."
                         result.final_state = AgentState.FAILED
                     else:
