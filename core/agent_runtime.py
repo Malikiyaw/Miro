@@ -31,6 +31,39 @@ class AgentRuntime(_AgentRuntime):
             gate = CompletionGate()
             verdict = gate.evaluate(result, getattr(final, "text", ""), True)
             if not verdict.allowed:
+                # Legitimate pauses are NOT failures:
+                #  - discovery queries succeeded AND the final asks the user
+                #    for confirmation before destructive work
+                #  - every executed tool succeeded (nothing failed at all)
+                final_text = getattr(final, "text", "") or ""
+                failed_receipts = [r for r in result.receipts if not r.success]
+                asks_confirmation = "?" in final_text
+                only_queries = bool(result.receipts) and not failed_receipts and all(
+                    str(r.action) not in DANGEROUS_TOOLS and str(r.action) not in MUTATING_TOOLS
+                    for r in result.receipts)
+
+                if asks_confirmation and not failed_receipts:
+                    # Model paused to ask permission — deliver its question as-is.
+                    result.final_state = AgentState.PLANNING
+                    if result.job:
+                        result.job.status = AgentState.PLANNING
+                    return final, result
+
+                if only_queries:
+                    # Discovery finished but no mutation ran yet.
+                    result.final_state = AgentState.FAILED
+                    if result.job:
+                        result.job.status = AgentState.FAILED
+                    qnames = ", ".join(f"`{r.action}`" for r in result.receipts[:4])
+                    final = FinalAIResponse(
+                        text=(f"🔎 Discovery completed ({qnames} verified). "
+                              f"No mutation was executed yet — tell me to proceed "
+                              f"with the deletion and I will."),
+                        state=AgentState.FAILED,
+                        request_id=getattr(final, "request_id", ""),
+                    )
+                    return final, result
+
                 result.final_state = AgentState.FAILED
                 if result.job:
                     result.job.status = AgentState.FAILED
@@ -48,7 +81,10 @@ class AgentRuntime(_AgentRuntime):
                 for receipt in failed[:5]:
                     lines.append(f"❌ `{receipt.action}` [{receipt.error_type.value}] — {receipt.message[:140]}")
                 if not mutations:
-                    lines.append("❌ No mutation tool call was executed.")
+                    if result.receipts:
+                        lines.append(f"🔎 {len(result.receipts)} discovery step(s) ran, but no mutation tool was executed.")
+                    else:
+                        lines.append("❌ No mutation tool call was executed.")
                 final = FinalAIResponse(
                     text="\n".join(lines),
                     state=AgentState.FAILED,
