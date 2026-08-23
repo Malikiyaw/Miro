@@ -3258,14 +3258,37 @@ class ActionHandler:
         ServerQueryEngine (fallback: direct guild scan), then applies the
         deterministic matcher — the AI never invents duplicate logic."""
         name = str(params.get("name") or params.get("channel_name") or "").strip()
-        if not name:
-            return False, {"error": "find_duplicate_channels requires 'name'."}
-        from core.agent_runtime import find_duplicate_channels
         exclude = params.get("exclude_channel_id") or params.get("protected_channel_id")
 
         # Prefer the real query engine so the tool genuinely executed a query
         channels_payload = None
         engine = getattr(self.bot, "server_query", None)
+
+        # NO name given -> deterministic server-wide group scan. This is the
+        # correct response to 'delete the duplicate channels' when the user
+        # names no specific target.
+        if not name:
+            from agent.tools import find_all_duplicate_groups
+            data = find_all_duplicate_groups(interaction.guild,
+                                             protected_channel_ids=[exclude] if exclude else [])
+            groups = []
+            total_dups = 0
+            for grp in data["groups"]:
+                dup_ids = [m["id"] for m in grp["duplicates"]]
+                total_dups += len(dup_ids)
+                groups.append({
+                    "base_name": grp["base_name"],
+                    "original": grp["original"],
+                    "duplicate_ids": dup_ids,
+                    "duplicates": grp["duplicates"],
+                })
+            msg = (f"Found {len(groups)} duplicate group(s) across the server "
+                   f"({total_dups} duplicate channels). Delete by ID with "
+                   f"bulk_delete_channels, or call again with a name to inspect one group.") \
+                  if groups else "No duplicate channel groups found — every channel name is unique."
+            return True, {"message": msg, "groups": groups,
+                          "group_count": len(groups), "total_duplicates": total_dups}
+
         if engine is not None and hasattr(engine, "query_channels"):
             try:
                 raw = await engine.query_channels(interaction.guild.id)

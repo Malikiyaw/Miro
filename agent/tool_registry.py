@@ -29,7 +29,7 @@ def _spec(name: str, description: str, parameters: Dict[str, Any], *,
 
 TOOL_SPECS: Dict[str, Dict[str, Any]] = {
     "query_channels": _spec("query_channels", "List live server channels with IDs and types.", {}, permission="none", danger="none", verifier="query_result", retries=0),
-    "find_duplicate_channels": _spec("find_duplicate_channels", "Find duplicate channels and return exact IDs plus protected targets.", {"name": {"type": "string", "required": False}}, permission="none", danger="none", verifier="query_result", retries=0),
+    "find_duplicate_channels": _spec("find_duplicate_channels", "Find duplicate channels. WITHOUT name: returns ALL duplicate groups on the server. WITH name: narrows to one target group and marks the protected channel.", {"name": {"type": "string", "required": False}, "protected_channel_id": {"type": "string", "required": False}}, permission="none", danger="none", verifier="query_result", retries=0),
     "get_channel": _spec("get_channel", "Fetch one live channel by ID.", {"channel_id": {"type": "integer", "required": True}}, permission="none", danger="none", verifier="query_result", retries=0),
     "query_roles": _spec("query_roles", "List live server roles.", {}, permission="none", danger="none", verifier="query_result", retries=0),
     "get_member": _spec("get_member", "Fetch one live member by ID.", {"user_id": {"type": "integer", "required": True}}, permission="none", danger="none", verifier="query_result", retries=0),

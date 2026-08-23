@@ -27,6 +27,16 @@ EXECUTION-REQUIRED RULES:
 - After every tool observation, either request the next tool or return a verified final answer.
 - Do not confuse object types: message tools cannot satisfy channel operations.
 
+PLAYBOOK — duplicate-channel cleanup ("delete the duplicate channels", keep current):
+  1. tool_calls=[{"name":"find_duplicate_channels","parameters":{}}]
+     (NO name needed: it returns ALL duplicate groups, each with an
+      "original" channel and a "duplicates" list of exact IDs.)
+  2. From one group's observation: tool_calls=[{"name":"bulk_delete_channels",
+     "parameters":{"channel_ids":[<every duplicates[] id>],
+     "protected_channel_id":"<original id>"}}]
+  3. Repeat per group or finish.
+  If the user names a target ("keep #foo"), pass protected_channel_id=<foo's id>.
+
 RECOVERY:
 - Transient failures may be retried by the executor.
 - Permission failures are permanent unless the observed state changes.
