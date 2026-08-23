@@ -1,6 +1,6 @@
 """V8 public AgentRuntime entrypoint and backend completion wrapper."""
 from agent.runtime import AgentRuntime as _AgentRuntime
-from agent.runtime import needs_confirmation, MAX_AGENT_STEPS, DANGEROUS_TOOLS
+from agent.runtime import needs_confirmation, MAX_AGENT_STEPS, DANGEROUS_TOOLS, MUTATING_TOOLS
 from agent.state import (
     AgentState, JobStatus, ErrorType, Receipt, ExecutionReceipt, Observation,
     AgentExecutionResult, FinalAIResponse, AgentJob, classify_error,
