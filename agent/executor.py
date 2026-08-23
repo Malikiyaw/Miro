@@ -1,5 +1,6 @@
-"""Tool executor: the ONLY mutation gateway is ActionHandler.dispatch()."""
+"""V8 tool executor: the ONLY mutation gateway is ActionHandler.dispatch()."""
 import asyncio
+import time
 from typing import Any, Dict, Optional
 
 from logger import logger
@@ -86,14 +87,76 @@ class Executor:
                     self.followup = _Follow()
             return _BotIdentity()
 
+    def _permission_decision(self, interaction, name: str, params: Dict[str, Any]):
+        """Run every agent tool through the central V2/V8 permission engine."""
+        engine = getattr(self.bot, "permission_engine", None)
+        if engine is None:
+            return True, ""
+
+        try:
+            from core.permissions.context import RequestContext
+            guild = getattr(interaction, "guild", None)
+            user = getattr(interaction, "user", None)
+            permissions = getattr(user, "guild_permissions", None)
+            is_admin = bool(getattr(permissions, "administrator", False))
+            is_owner = bool(guild is not None and getattr(guild, "owner_id", None) == getattr(user, "id", None))
+            is_bot_identity = bool(getattr(interaction, "_miro_ai_source", False) is False and user is getattr(self.bot, "user", None))
+
+            target_role_position = None
+            target_role_id = params.get("role_id")
+            if target_role_id and guild is not None:
+                role = guild.get_role(int(target_role_id)) if str(target_role_id).isdigit() else None
+                if role is not None:
+                    target_role_position = role.position
+
+            user_top = getattr(getattr(user, "top_role", None), "position", -1)
+            bot_member = guild.me if guild is not None else None
+            bot_top = getattr(getattr(bot_member, "top_role", None), "position", -1)
+
+            ctx = RequestContext(
+                guild_id=getattr(guild, "id", None),
+                user_id=getattr(user, "id", None),
+                action=name,
+                source="ai" if getattr(interaction, "_miro_ai_source", False) else "command",
+                is_admin=is_admin,
+                is_owner=is_owner,
+                is_bot_identity=is_bot_identity,
+                user_top_role_position=user_top,
+                target_role_position=target_role_position,
+                bot_top_role_position=bot_top,
+                metadata={"target_role_id": target_role_id},
+            )
+            decision = engine.evaluate(ctx)
+            return bool(decision.allowed), str(getattr(decision, "reason", ""))
+        except Exception as exc:
+            logger.exception("Agent permission evaluation failed")
+            return False, f"permission engine error: {exc}"
+
     async def execute(self, interaction, name: str, params: Dict[str, Any],
                       request_id: str = "", retries: int = 1,
-                      timeout_override: Optional[float] = None) -> Receipt:
+                      timeout_override: Optional[float] = None,
+                      job_id: str = "") -> Receipt:
+        started = time.time()
         handler = getattr(self.bot, "action_handler", None)
         if handler is None:
-            return Receipt(action=name, success=False, verified=False,
-                           error_type=ErrorType.PROVIDER_ERROR,
-                           message="ActionHandler unavailable", request_id=request_id)
+            return Receipt(
+                action=name, success=False, verified=False,
+                error_type=ErrorType.PROVIDER_ERROR,
+                message="ActionHandler unavailable", request_id=request_id,
+                job_id=job_id, parameters=dict(params), started_at=started,
+                finished_at=time.time(),
+            )
+
+        allowed, permission_reason = self._permission_decision(interaction, name, params)
+        if not allowed:
+            return Receipt(
+                action=name, success=False, verified=False,
+                error_type=ErrorType.MISSING_PERMISSION,
+                message=permission_reason or "permission denied",
+                request_id=request_id, job_id=job_id,
+                parameters=dict(params), started_at=started,
+                finished_at=time.time(),
+            )
 
         async def run():
             ctx = interaction
@@ -101,12 +164,11 @@ class Executor:
                 if ctx is None:
                     ctx = self.build_bot_identity_interaction(
                         self.bot, params.get("guild_id") or 0)
-                # Single authoritative mutation gateway.
+                # Single authoritative mutation gateway. No AI-facing path may
+                # call Discord mutations directly.
                 success, info = await handler.dispatch(ctx, name, params)
                 return bool(success), info or {}
             except Exception as e:
-                # Never swallow an execution exception. Convert it to a receipt
-                # so the agent can observe the exact failure and replan.
                 logger.exception(f"Agent tool {name} raised")
                 return False, {"error": str(e)[:500], "exception": type(e).__name__}
 
@@ -135,8 +197,6 @@ class Executor:
                     target_id = str(params[key])
                     break
 
-        # Keep structured discovery results in the observation stream so a
-        # subsequent planning turn can use exact IDs rather than hallucinating.
         message = str(info.get("message") or "").strip()
         if not message:
             if isinstance(info.get("duplicates"), list):
@@ -162,6 +222,10 @@ class Executor:
             error_type=et,
             message=message[:500],
             request_id=request_id,
+            job_id=job_id,
+            parameters=dict(params),
+            started_at=started,
+            finished_at=time.time(),
         )
 
     def get(self, name: str) -> Dict[str, Any]:
