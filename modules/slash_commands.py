@@ -265,7 +265,12 @@ class SlashCommands(commands.Cog):
                     reply = (reply or "Done!") + "\n\n**Actions executed:**\n" + "\n".join(reports)
 
         if not reply:
-            reply = "*(The AI didn't produce a readable answer — please try rephrasing your message.)*"
+            # Diagnostic fallback: say WHAT happened (tool calls issued or not)
+            actions_ran = len(result.get("actions") or [])
+            diag = (f"the model issued {actions_ran} tool call(s) but produced no readable "
+                    f"summary") if actions_ran else "no tool calls were issued"
+            reply = (f"⚠️ The AI returned an unreadable response ({diag}). "
+                     f"Please rephrase, or run `/config test` to check the AI provider.")
 
         # Discord hard-limits messages to 2000 chars; chunk long replies
         for i in range(0, len(reply), 2000):

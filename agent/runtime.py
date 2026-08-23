@@ -60,6 +60,20 @@ class AgentRuntime:
         except Exception as exc:
             logger.debug(f"agent progress failed: {exc}")
 
+    def _finalize_text(self, summary: str, result: AgentExecutionResult) -> str:
+        """HARD GUARANTEE: the user never receives an empty agent answer."""
+        text = str(summary or "").strip()
+        if text:
+            return text
+        receipt_text = self._receipt_summary(result)
+        if receipt_text:
+            return receipt_text
+        if self._original_intent_actionable():
+            return ("⚠️ I understood the request, but the AI model did not issue any "
+                    "tool calls, so nothing was changed. Try rephrasing the request — "
+                    "or use `/system` for direct controls.")
+        return "⚠️ The operation could not be completed."
+
     def _receipt_summary(self, result: AgentExecutionResult) -> str:
         receipts = result.mutation_receipts
         if not receipts:
