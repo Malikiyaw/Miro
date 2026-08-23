@@ -59,7 +59,12 @@ def classify_request(text: str) -> RequestClassification:
     # "find duplicate channels" is discovery, not a mutation.
     if mutation:
         multi = any(p in low for p in MULTI_STEP_PATTERNS)
-        numbers = re.findall(r"\b(\d+)\b", low)
+        # Numbers DIRECTLY after an object word are TARGET IDs ("delete
+        # channel 123"), not quantities. Only standalone counts may set
+        # requested_count, otherwise completion math demands 123 verifications.
+        id_like = set(re.findall(
+            r"\b(?:channel|role|user|member|message|msg|id)\s+(\d+)\b", low))
+        numbers = [n for n in re.findall(r"\b(\d+)\b", low) if n not in id_like]
         requested = int(numbers[0]) if numbers else 0
         if requested > 1:
             multi = True

@@ -195,3 +195,15 @@
 2026-08-23 06:23:07,070 - MiroBot - ERROR - error:96 - Failed to save exchange: module 'aiosqlite' has no attribute 'connect'
 2026-08-23 06:23:07,070 - MiroBot - ERROR - error:96 - Failed to get conversation history: module 'aiosqlite' has no attribute 'connect'
 2026-08-23 06:23:07,070 - MiroBot - ERROR - error:96 - Failed to load conversation summaries: module 'aiosqlite' has no attribute 'connect'
+2026-08-23 08:25:45,168 - MiroBot - ERROR - exception:104 - Agent tool delete_channel raised
+Traceback (most recent call last):
+  File "/workspace/cad48349-765c-4c08-becd-f0aeb983a551/sessions/agent_161b71b2-fb0d-4197-be02-e6a6e5f37e38/./agent/executor.py", line 169, in run
+    success, info = await handler.dispatch(ctx, name, params)
+  File "<stdin>", line 15, in dispatch
+NameError: name 'g' is not defined
+2026-08-23 08:25:45,169 - MiroBot - ERROR - exception:104 - Agent tool delete_channel raised
+Traceback (most recent call last):
+  File "/workspace/cad48349-765c-4c08-becd-f0aeb983a551/sessions/agent_161b71b2-fb0d-4197-be02-e6a6e5f37e38/./agent/executor.py", line 169, in run
+    success, info = await handler.dispatch(ctx, name, params)
+  File "<stdin>", line 15, in dispatch
+NameError: name 'g' is not defined

@@ -249,7 +249,10 @@ class AgentRuntime:
                     result.hit_step_limit = True
                     result.final_state = AgentState.TIMED_OUT
                     job.status = AgentState.TIMED_OUT
-                    note = f"⚠️ Miro stopped the operation because the agent reached its execution limit.\nCompleted: {result.completed_steps}/{self.max_steps} actions."
+                    note = (f"⚠️ Miro stopped the operation because the agent reached its execution limit.\n"
+                            f"Completed: {result.completed_steps}/{self.max_steps} actions.")
+                    if result.receipts:
+                        note += "\n" + self._receipt_summary(result)
                     await self._progress(note)
                     return FinalAIResponse(text=note, state=AgentState.TIMED_OUT), result
 
@@ -286,7 +289,21 @@ class AgentRuntime:
 
                 sig = f"{name}:{json.dumps(params, sort_keys=True)[:500]}"
                 if self._signatures[-3:].count(sig) >= 2:
+                    # Redundant repeat of an already-verified action is a
+                    # neutral no-op, NOT a failure (it must not poison the
+                    # completion gate). Force finalization instead.
+                    prior_ok = any(r.action == name and r.success and r.verified
+                                   and f"{r.action}:{json.dumps(r.parameters or {}, sort_keys=True)[:500]}" == sig
+                                   for r in result.receipts)
                     result.loop_detected = True
+                    if prior_ok:
+                        obs = Observation(tool=name, params=params, success=True, verified=True,
+                                          detail="redundant repeat — already executed and verified", receipt=None)
+                        result.observations.append(obs)
+                        messages.append({"role": "user", "content":
+                                         f"`{name}` was ALREADY executed and verified. Do NOT call it again. "
+                                         "Reply with ONLY the final user-facing summary now — no actions."})
+                        continue
                     receipt = Receipt(action=name, success=False, verified=False, error_type=ErrorType.SEMANTIC_MISMATCH, message="LOOP_DETECTED — identical call already made twice with no progress", job_id=job.job_id, parameters=dict(params))
                     result.receipts.append(receipt)
                     result.observations.append(Observation(tool=name, params=params, success=False, verified=False, detail=receipt.message, receipt=receipt))
@@ -326,7 +343,10 @@ class AgentRuntime:
                 result.hit_step_limit = True
                 result.final_state = AgentState.TIMED_OUT
                 job.status = AgentState.TIMED_OUT
-                note = f"⚠️ Miro stopped the operation because the agent reached its execution limit.\nCompleted: {result.completed_steps}/{self.max_steps} actions."
+                note = (f"⚠️ Miro stopped the operation because the agent reached its execution limit.\n"
+                            f"Completed: {result.completed_steps}/{self.max_steps} actions.")
+                    if result.receipts:
+                        note += "\n" + self._receipt_summary(result)
                 await self._progress(note)
                 return FinalAIResponse(text=note, state=AgentState.TIMED_OUT), result
 
