@@ -59,11 +59,36 @@ class AIClient:
                     if isinstance(r,dict) and valid(r.get('api_key')): out.append({'api_key':r['api_key'],'provider':p})
         return out
 
-    def _coerce_model_for_provider(self,guild_id,provider):
+    async def _coerce_model_for_provider(self,guild_id,provider,api_key=None):
+        """Resolve the model that will ACTUALLY work on this provider:
+        guild custom model if compatible, else provider default. Cross-provider
+        names like glm-5-2 on Mistral are swapped instead of 403-ing."""
         from data_manager import dm
-        custom=dm.get_guild_data(guild_id,'custom_model',None); reg=AIProviderRegistry()
+        reg=AIProviderRegistry()
+        custom=dm.get_guild_data(guild_id,'custom_model',None)
+        default=reg.default_model(provider)
         if not custom:return None
-        if not reg.is_chat_model(custom): return reg.default_model(provider)
+        if not reg.is_chat_model(custom):
+            logger.info(f"model '{custom}' is not chat-capable; using '{default}' for {provider}")
+            return default
+        # Live provider catalog is authoritative when reachable
+        if api_key:
+            try:
+                catalog=await reg.list_models(provider,api_key)
+                if catalog and custom not in catalog:
+                    logger.warning(f"model '{custom}' is not served by {provider}; "
+                                   f"using '{default}' instead")
+                    return default
+            except Exception as e:
+                logger.debug(f"catalog check failed for {provider}: {e}")
+        # Curated-list compatibility check (offline fallback)
+        curated=[m.lower() for m in reg.curated_models(provider)]
+        if curated:
+            low=custom.lower()
+            tokens=lambda pm:[t for t in pm.replace('/', '.').replace('_', '.').replace('-', '.').split('.') if len(t)>=3 and not t.isdigit()]
+            if not any(tok in low for pm in curated for tok in tokens(pm)):
+                logger.info(f"model '{custom}' incompatible with {provider}; using '{default}'")
+                return default
         return custom
 
     async def chat(self,guild_id:int,user_id:int,user_input:str,system_prompt:str,persist:bool=False,extra_messages:Optional[List[Dict[str,str]]]=None)->Dict[str,Any]:
@@ -73,7 +98,8 @@ class AIClient:
             return {'error':'AI_NOT_CONFIGURED','summary':'AI is not configured for this server.'}
         for bundle in keys:
             try:
-                result=await self._chat_internal(guild_id,user_id,user_input,system_prompt,bundle['api_key'],bundle['provider'],model_override=self._coerce_model_for_provider(guild_id,bundle['provider']),extra_messages=extra_messages)
+                model_override=await self._coerce_model_for_provider(guild_id,bundle['provider'],bundle['api_key'])
+                result=await self._chat_internal(guild_id,user_id,user_input,system_prompt,bundle['api_key'],bundle['provider'],model_override=model_override,extra_messages=extra_messages)
                 if result.get('_miro_empty'): continue
                 self.report_success()
                 if persist:

@@ -323,11 +323,21 @@ class CoreCommands(commands.Cog):
 
         guild_id = interaction.guild.id
         provider = self._active_provider(guild_id)
-        model = self._active_model(guild_id)
+        stored_model = self._active_model(guild_id)
         key = self._provider_key(guild_id, provider)
         registry = self.providers
         rows: list[tuple[str, bool, str]] = []
 
+        def add(label: str, ok: bool, detail: str = ""):
+            rows.append((label, ok, detail))
+
+        # Test the model that will ACTUALLY run: cross-provider names are
+        # coerced exactly like production requests do.
+        try:
+            model = await self.bot.ai._coerce_model_for_provider(guild_id, provider, key) \
+                    or registry.default_model(provider)
+        except Exception:
+            model = stored_model
         def add(label: str, ok: bool, detail: str = ""):
             rows.append((label, ok, detail))
 
@@ -350,9 +360,12 @@ class CoreCommands(commands.Cog):
         if key:
             known = await registry.list_models(provider, key)
         if known:
+            stored_in = stored_model in known
             add("Model available", model in known,
-                f"`{model}` " + ("in provider catalog" if model in known
-                                 else f"NOT in catalog ({len(known)} models)"))
+                f"stored `{stored_model}`: "
+                + ("in catalog" if stored_in else
+                   f"NOT in catalog — runtime will use `{model}`")
+                + (f" · effective `{model}` in catalog" if model in known else ""))
         else:
             add("Model available", True, "catalog unavailable — skipping strict check")
 
