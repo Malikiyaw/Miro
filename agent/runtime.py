@@ -200,12 +200,19 @@ class AgentRuntime:
                     if classification.execution_required and not blocking and not has_work and self._nudges < 3:
                         self._nudges += 1
                         messages.append({"role": "assistant", "content": summary or final_answer or ""})
-                        messages.append({"role": "user", "content": "MODEL_RETURNED_TEXT_WITHOUT_TOOL: execution_required=true. This turn is invalid. Select and call the correct tool now."})
+                        tool_menu = ", ".join(sorted(tool_registry.all_names())[:25])
+                        messages.append({"role": "user", "content":
+                                         f"MODEL_RETURNED_TEXT_WITHOUT_TOOL: execution_required=true. "
+                                         f"This turn is invalid. Select and call the correct tool NOW. "
+                                         f"Available tools: {tool_menu}"})
                         await self._progress(f"🔁 Replanning after text-only model turn ({self._nudges}/3)…")
                         continue
 
                     if classification.execution_required and not blocking:
-                        summary = (self.final_response_gate(summary or final_answer or "", result) + "\n" + self._receipt_summary(result)).strip()
+                        merged = self.final_response_gate(summary or final_answer or "", result)
+                        receipt_text = self._receipt_summary(result)
+                        summary = ((merged + "\n" + receipt_text).strip()
+                                   if receipt_text else merged.strip())
                     elif classification.execution_required and not summary:
                         summary = "⚠️ I could not complete that action. No verified mutation succeeded."
 
@@ -217,7 +224,9 @@ class AgentRuntime:
                         result.final_state = AgentState.FAILED if blocking else AgentState.COMPLETED
                     job.status = result.final_state
                     job.completed_at = time.time()
-                    return FinalAIResponse(text=summary or "Done.", state=result.final_state), result
+                    # HARD GUARANTEE (V8): the user never receives an empty answer
+                    summary = self._finalize_text(summary, result)
+                    return FinalAIResponse(text=summary, state=result.final_state), result
 
             while pending_actions:
                 step += 1
