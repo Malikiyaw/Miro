@@ -164,7 +164,9 @@ class SlashCommands(commands.Cog):
         # Agentic execution: the model's plan runs through the agent runtime
         # (tool → observe → replan → final answer). Internal planning text
         # never reaches Discord — only the final response + a report.
-        actions = result.get("actions") or []
+        # Native provider responses carry calls under `tool_calls`; legacy
+        # JSON plans under `actions`. Both must execute.
+        actions = result.get("tool_calls") or result.get("actions") or []
         if isinstance(actions, list) and actions:
             from core.guild_ai_config import GuildAIConfig
             gcfg = GuildAIConfig.load(interaction.guild.id)
@@ -219,7 +221,8 @@ class SlashCommands(commands.Cog):
                     interaction, text[:2000],
                     ("You are Miro, a helpful and proactive Discord server assistant "
                      "executing an operation for a trusted administrator."),
-                    initial_result=result)
+                    initial_result={"summary": str(result.get("summary") or ""),
+                                    "tool_calls": actions})
                 reply = final.text or "Done."
                 # Final answer goes out as a fresh message; the progress
                 # message above stays as the live execution log.
@@ -238,15 +241,19 @@ class SlashCommands(commands.Cog):
                         lines.append(line)
                     reply += "\n\n**Actions:**\n" + "\n".join(lines)
             else:
-                # Agent mode off: direct one-pass dispatch (previous behavior)
+                # Agent mode off: direct one-pass dispatch (previous behavior).
+                # Normalize native {function:{name,arguments}} entries first.
+                try:
+                    from core.agent_runtime import AgentRuntime as _AR
+                    norm = _AR._normalize_actions(actions)
+                except Exception:
+                    norm = [a for a in actions if isinstance(a, dict)]
                 try:
                     interaction._miro_ai_source = True
                 except Exception:
                     pass
                 reports = []
-                for action in actions[:5]:
-                    if not isinstance(action, dict):
-                        continue
+                for action in norm[:5]:
                     name = str(action.get("name") or "").strip()
                     params = action.get("parameters")
                     if not name:

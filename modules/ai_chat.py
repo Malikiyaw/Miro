@@ -265,7 +265,17 @@ Ensure no trailing commas, comments, or text outside JSON. Lines under 1500 char
             # Extract components
             reasoning = result.get("reasoning", "")
             summary = result.get("summary", "I didn't quite catch that. Could you try again?")
-            actions = result.get("actions", [])
+            # Native provider turns carry calls under `tool_calls`; legacy
+            # JSON plans under `actions`. Both must execute.
+            # Native provider turns carry calls under `tool_calls`; legacy
+            # JSON plans under `actions`. Both must execute.
+            # Native provider turns carry calls under `tool_calls`; legacy
+            # JSON plans under `actions`. Both must execute.
+            # Native provider turns carry calls under `tool_calls`; legacy
+            # JSON plans under `actions`. Both must execute.
+            # Native provider turns carry calls under `tool_calls`; legacy
+            # JSON plans under `actions`. Both must execute.
+            actions = result.get("tool_calls") or result.get("actions", [])
 
             # Execute via the Agent Runtime — the summary is regenerated from
             # actual execution results, never sent as-is after failures.
@@ -282,7 +292,6 @@ Ensure no trailing commas, comments, or text outside JSON. Lines under 1500 char
                 except Exception as e:
                     logger.error(f"Agent execution failed: {e}")
                     summary = "⚠️ I couldn't complete that operation. The error was logged."
-
             # Store conversation
             session["messages"].append({"role": "user", "content": user_input})
             session["messages"].append({"role": "assistant", "content": summary})
