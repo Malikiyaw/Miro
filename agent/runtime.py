@@ -105,9 +105,37 @@ class AgentRuntime:
         return False
 
     @staticmethod
+    def _normalize_actions(raw_calls) -> List[Dict[str, Any]]:
+        """Accept BOTH internal {name,parameters} entries and provider-native
+        {id,function:{name,arguments}} entries; arguments may be a JSON string."""
+        import json as _json
+        actions: List[Dict[str, Any]] = []
+        for tc in raw_calls or []:
+            if not isinstance(tc, dict):
+                continue
+            name = tc.get("name")
+            params = tc.get("parameters")
+            fn = tc.get("function")
+            if not name and isinstance(fn, dict):
+                name = fn.get("name")
+                raw_args = fn.get("arguments", "{}")
+                if isinstance(raw_args, str):
+                    try:
+                        params = _json.loads(raw_args or "{}")
+                    except Exception:
+                        params = {}
+                elif isinstance(raw_args, dict):
+                    params = raw_args
+            if not name:
+                continue
+            actions.append({"name": str(name),
+                            "parameters": params if isinstance(params, dict) else {}})
+        return actions
+
+    @staticmethod
     def _parse_turn(ai_result: Dict[str, Any]):
         intent = str(ai_result.get("intent") or "").strip()
-        actions = [a for a in (ai_result.get("tool_calls") or ai_result.get("actions") or []) if isinstance(a, dict)]
+        actions = AgentRuntime._normalize_actions(ai_result.get("tool_calls") or ai_result.get("actions"))
         final_answer = ai_result.get("final_answer")
         if final_answer is not None and not isinstance(final_answer, str):
             final_answer = str(final_answer)
@@ -125,13 +153,24 @@ class AgentRuntime:
         messages: List[Dict[str, str]] = []
         pending_actions: List[Dict[str, Any]] = []
         if initial_result:
-            pending_actions = [a for a in (initial_result.get("actions") or initial_result.get("tool_calls") or []) if isinstance(a, dict)]
+            pending_actions = self._normalize_actions(
+                initial_result.get("actions") or initial_result.get("tool_calls"))
             if initial_result.get("summary") and pending_actions:
                 messages.append({"role": "assistant", "content": f"(internal plan, not yet executed): {str(initial_result['summary'])[:1000]}"})
 
         await self._progress("🧠 Understanding request…")
         if classification.execution_required:
             await self._progress("⚡ EXECUTION_REQUIRED — selecting a real tool")
+
+        # SERVER VISION: inject live server state so the model SEES the server
+        # (name, members, channels with IDs, roles) before deciding tools.
+        try:
+            from agent.context import build_server_context
+            ctx_text = await build_server_context(self.bot, self.guild)
+            if ctx_text:
+                messages.append({"role": "user", "content": ctx_text})
+        except Exception as e:
+            logger.debug(f"server context injection failed: {e}")
         step = 0
 
         while True:

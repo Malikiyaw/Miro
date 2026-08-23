@@ -113,6 +113,11 @@ class MiroBot(commands.Bot):
         self.action_handler = ActionHandler(self)
         self.vector_memory = vector_memory
 
+        # V9 native tool-calling: advertise real Miro tools to every provider
+        # request so the model can CALL them instead of writing how-to guides.
+        from agent.native_tools import install_on_bot
+        install_on_bot(self)
+
         # Core architecture layer (V2 plan): event bus, audit, rate limits,
         # permissions, health watchdogs. Wraps existing systems — no duplicates.
         from core.event_bus import EventBus
