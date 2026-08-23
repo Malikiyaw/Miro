@@ -344,9 +344,9 @@ class AgentRuntime:
                 result.final_state = AgentState.TIMED_OUT
                 job.status = AgentState.TIMED_OUT
                 note = (f"⚠️ Miro stopped the operation because the agent reached its execution limit.\n"
-                            f"Completed: {result.completed_steps}/{self.max_steps} actions.")
-                    if result.receipts:
-                        note += "\n" + self._receipt_summary(result)
+                        f"Completed: {result.completed_steps}/{self.max_steps} actions.")
+                if result.receipts:
+                    note += "\n" + self._receipt_summary(result)
                 await self._progress(note)
                 return FinalAIResponse(text=note, state=AgentState.TIMED_OUT), result
 

@@ -251,3 +251,5 @@ Traceback (most recent call last):
     success, info = await handler.dispatch(ctx, name, params)
   File "<stdin>", line 15, in dispatch
 NameError: name 'g' is not defined
+2026-08-23 11:01:39,846 - MiroBot - DEBUG - debug:84 - server context injection failed: 'method' object is not iterable
+2026-08-23 11:01:39,847 - MiroBot - DEBUG - debug:84 - server context injection failed: 'method' object is not iterable
