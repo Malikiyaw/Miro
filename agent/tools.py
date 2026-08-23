@@ -65,11 +65,56 @@ def find_duplicate_channels(guild, name: str, protected_channel_id=None,
             "protected": kept}
 
 
+def find_all_duplicate_groups(guild, protected_channel_ids=None) -> Dict[str, Any]:
+    """
+    Deterministic server-wide duplicate scan: group text channels by
+    normalized base name and return every group with more than one member.
+    Serves 'delete the duplicate channels' when the user names no target.
+    """
+    protected = {str(x) for x in (protected_channel_ids or [])}
+
+    def normalize(s: str) -> str:
+        s = s.lower().strip()
+        s = _re.sub(r"[-_\s]+", "-", s)
+        s = _re.sub(r"^[^a-z0-9]+", "", s)   # emoji/decoration prefixes
+        s = _re.sub(r"-\d+$", "", s)          # clone counters
+        s = _re.sub(r"\s+\d+$", "", s)
+        return s
+
+    groups: Dict[str, list] = {}
+    for channel in guild.text_channels:
+        base = normalize(channel.name)
+        if not base:
+            continue
+        groups.setdefault(base, []).append({
+            "id": str(channel.id), "name": channel.name,
+            "category_id": str(channel.category_id) if channel.category_id else "",
+            "created_at": channel.created_at.isoformat() if channel.created_at else "",
+        })
+
+    out = []
+    for base, members in sorted(groups.items()):
+        if len(members) < 2:
+            continue
+        # oldest member is the presumed original; the rest are duplicates
+        ordered = sorted(members, key=lambda m: m["created_at"])
+        original, dups = ordered[0], ordered[1:]
+        out.append({
+            "base_name": original["name"],
+            "protected_channel_id": original["id"] if original["id"] in protected else "",
+            "original": original,
+            "duplicates": dups,
+        })
+    return {"groups": out, "group_count": len(out)}
+
+
 def validate_params(name: str, params: Dict[str, Any]) -> tuple:
     """Schema-level validation BEFORE dispatch."""
     if name == "find_duplicate_channels":
-        if not str(params.get("name") or "").strip():
-            return False, "requires 'name' (the channel name to look for)"
+        # name is optional: without it the tool scans the WHOLE server for
+        # duplicate groups, which is exactly what 'delete duplicate channels'
+        # needs when the user names no specific target.
+        return True, ""
     elif name == "bulk_delete_channels":
         ids = params.get("channel_ids") or params.get("channels")
         if not isinstance(ids, list) or not ids:
