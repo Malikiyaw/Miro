@@ -1,11 +1,31 @@
-"""Post-execution verification against REAL Discord state.
+"""V8 post-execution verification against live Discord state.
 
-V7 rule: an unknown mutation is never considered verified. The agent must have
-positive evidence that the requested Discord state now matches the operation.
+Verification is positive evidence, not a copy of the executor's success flag.
+Unknown mutations fail closed.
 """
 from typing import Any, Dict
 
 from core.action_meta import get_meta
+
+
+async def _fetch_channel(guild, channel_id):
+    try:
+        return await guild.fetch_channel(int(channel_id))
+    except Exception as exc:
+        # discord.NotFound means the channel is genuinely gone. Other failures
+        # are treated as unverifiable rather than silently successful.
+        if exc.__class__.__name__ == "NotFound":
+            return None
+        raise
+
+
+async def _fetch_member(guild, user_id):
+    try:
+        return await guild.fetch_member(int(user_id))
+    except Exception as exc:
+        if exc.__class__.__name__ == "NotFound":
+            return None
+        raise
 
 
 class Verifier:
@@ -18,8 +38,6 @@ class Verifier:
             meta = get_meta(name)
             operation = meta.get("operation")
 
-            # Queries do not mutate state and therefore do not need mutation
-            # verification. They are successful when the executor succeeded.
             if operation == "query":
                 return True
 
@@ -27,84 +45,93 @@ class Verifier:
                 channel_id = params.get("channel_id")
                 if not channel_id or not str(channel_id).isdigit():
                     return False
-                return guild.get_channel(int(channel_id)) is None
+                return await _fetch_channel(guild, channel_id) is None
 
             if name in ("bulk_delete_channels", "cleanup_duplicate_channels"):
                 ids = params.get("channel_ids") or params.get("channels") or []
                 if not isinstance(ids, list) or not ids:
                     return False
-                protected = {
-                    str(x) for x in (params.get("protected_channel_ids") or [])
-                }
+                protected = {str(x) for x in (params.get("protected_channel_ids") or [])}
                 one = params.get("protected_channel_id")
                 if one:
                     protected.add(str(one))
                 targets = [str(x) for x in ids if str(x) not in protected]
                 if not targets:
                     return False
-                return all(
-                    (not x.isdigit()) or guild.get_channel(int(x)) is None
-                    for x in targets
-                )
+                for target in targets:
+                    if target.isdigit() and await _fetch_channel(guild, target) is not None:
+                        return False
+                return True
 
             if name == "delete_role":
                 role_id = params.get("role_id")
                 if not role_id or not str(role_id).isdigit():
                     return False
-                return guild.get_role(int(role_id)) is None
+                roles = await guild.fetch_roles()
+                return all(str(r.id) != str(role_id) for r in roles)
 
             if name in ("create_channel", "create_category", "create_shop_channel"):
-                channel_id = params.get("channel_id")
-                if not channel_id or not str(channel_id).isdigit():
-                    return False
-                channel = guild.get_channel(int(channel_id))
-                if channel is None:
-                    return False
                 wanted = str(params.get("name") or "").strip().lower()
-                return not wanted or channel.name.lower() == wanted
+                channel_id = params.get("channel_id")
+                if channel_id and str(channel_id).isdigit():
+                    channel = await _fetch_channel(guild, channel_id)
+                    return channel is not None and (not wanted or channel.name.lower() == wanted)
+                if not wanted:
+                    return False
+                channels = await guild.fetch_channels()
+                return any(getattr(c, "name", "").lower() == wanted for c in channels)
 
-            if name in ("rename_channel", "edit_channel") and (
-                params.get("new_name") or params.get("name")
-            ):
+            if name in ("rename_channel", "edit_channel", "edit_channel_name"):
                 channel_id = params.get("channel_id")
                 new_name = str(params.get("new_name") or params.get("name") or "").strip().lower()
                 if not channel_id or not str(channel_id).isdigit() or not new_name:
                     return False
-                channel = guild.get_channel(int(channel_id))
+                channel = await _fetch_channel(guild, channel_id)
                 return channel is not None and channel.name.lower() == new_name
 
             if name == "create_role":
-                role_id = params.get("role_id")
-                if not role_id or not str(role_id).isdigit():
-                    return False
-                role = guild.get_role(int(role_id))
-                if role is None:
-                    return False
                 wanted = str(params.get("name") or "").strip().lower()
-                return not wanted or role.name.lower() == wanted
+                role_id = params.get("role_id")
+                roles = await guild.fetch_roles()
+                if role_id and str(role_id).isdigit():
+                    role = next((r for r in roles if r.id == int(role_id)), None)
+                    return role is not None and (not wanted or role.name.lower() == wanted)
+                return bool(wanted) and any(r.name.lower() == wanted for r in roles)
 
-            if name == "assign_role":
+            if name in ("assign_role", "remove_role"):
                 user_id = params.get("user_id") or params.get("member_id")
                 role_id = params.get("role_id")
                 if not user_id or not role_id or not str(user_id).isdigit() or not str(role_id).isdigit():
                     return False
-                member = guild.get_member(int(user_id))
-                role = guild.get_role(int(role_id))
-                return member is not None and role is not None and role in member.roles
-
-            if name == "remove_role":
-                user_id = params.get("user_id") or params.get("member_id")
-                role_id = params.get("role_id")
-                if not user_id or not role_id or not str(user_id).isdigit() or not str(role_id).isdigit():
+                member = await _fetch_member(guild, user_id)
+                roles = await guild.fetch_roles()
+                role = next((r for r in roles if r.id == int(role_id)), None)
+                if member is None or role is None:
                     return False
-                member = guild.get_member(int(user_id))
-                role = guild.get_role(int(role_id))
-                return member is not None and role is not None and role not in member.roles
+                role_ids = {r.id for r in getattr(member, "roles", [])}
+                if name == "assign_role":
+                    return role.id in role_ids
+                return role.id not in role_ids
 
-            # V7 fail-closed rule: do not turn an executor's success boolean into
-            # a fake verification result for an unimplemented mutation verifier.
+            if name in ("kick_user", "ban_user", "softban_user"):
+                user_id = params.get("user_id") or params.get("member_id")
+                if not user_id or not str(user_id).isdigit():
+                    return False
+                member = await _fetch_member(guild, user_id)
+                if name == "kick_user":
+                    return member is None
+                try:
+                    await guild.fetch_ban(__import__("discord").Object(id=int(user_id)))
+                    return True
+                except Exception as exc:
+                    if exc.__class__.__name__ == "NotFound":
+                        return False
+                    raise
+
+            # V8 fail-closed rule: a mutation without a concrete verifier is not
+            # allowed to become VERIFIED merely because Discord returned success.
             return False
-        except Exception as e:
+        except Exception as exc:
             import logging
-            logging.getLogger(__name__).debug(f"verify {name} failed: {e}")
+            logging.getLogger(__name__).debug(f"verify {name} failed: {exc}")
             return False
