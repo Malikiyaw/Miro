@@ -275,6 +275,10 @@ Ensure no trailing commas, comments, or text outside JSON. Lines under 1500 char
             # JSON plans under `actions`. Both must execute.
             # Native provider turns carry calls under `tool_calls`; legacy
             # JSON plans under `actions`. Both must execute.
+            # Native provider turns carry calls under `tool_calls`; legacy
+            # JSON plans under `actions`. Both must execute.
+            # Native provider turns carry calls under `tool_calls`; legacy
+            # JSON plans under `actions`. Both must execute.
             actions = result.get("tool_calls") or result.get("actions", [])
 
             # Execute via the Agent Runtime — the summary is regenerated from
