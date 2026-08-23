@@ -1,4 +1,4 @@
-"""Agent state machine + canonical result objects."""
+"""V8 agent state machine + canonical execution receipts."""
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional
 
 
 class AgentState(str, Enum):
+    EXECUTION_REQUIRED = "EXECUTION_REQUIRED"
+    UNDERSTANDING = "UNDERSTANDING"
     PLANNING = "PLANNING"
     TOOL_REQUESTED = "TOOL_REQUESTED"
     VALIDATING = "VALIDATING"
@@ -22,7 +24,6 @@ class AgentState(str, Enum):
     TIMED_OUT = "TIMED_OUT"
 
 
-# Back-compat alias used across the codebase
 JobStatus = AgentState
 
 
@@ -51,7 +52,7 @@ def classify_error(text: str) -> ErrorType:
         return ErrorType.MISSING_PERMISSION
     if "not found" in t or "does not exist" in t or "no channels matching" in t:
         return ErrorType.NOT_FOUND
-    if "invalid parameter" in t or "requires" in t and "param" in t:
+    if "invalid parameter" in t or ("requires" in t and "param" in t):
         return ErrorType.INVALID_PARAMS
     if "rejected" in t or "object type" in t:
         return ErrorType.SEMANTIC_MISMATCH
@@ -67,8 +68,8 @@ def classify_error(text: str) -> ErrorType:
 
 
 @dataclass
-class Receipt:
-    """One source of truth for agent/audit/analytics/user."""
+class ExecutionReceipt:
+    """Authoritative proof record for one tool execution."""
     action: str
     target_id: str = ""
     target_type: str = ""
@@ -78,12 +79,47 @@ class Receipt:
     message: str = ""
     request_id: str = field(default_factory=lambda: f"ai_{uuid.uuid4().hex[:8]}")
     timestamp: float = field(default_factory=time.time)
+    execution_id: str = field(default_factory=lambda: f"exec_{uuid.uuid4().hex[:10]}")
+    job_id: str = ""
+    tool: str = ""
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    started_at: float = 0.0
+    finished_at: float = 0.0
+
+    def __post_init__(self):
+        if not self.tool:
+            self.tool = self.action
+        if not self.started_at:
+            self.started_at = self.timestamp
+        if not self.finished_at:
+            self.finished_at = self.timestamp
+
+    @property
+    def duration_ms(self) -> float:
+        return max(0.0, (self.finished_at - self.started_at) * 1000.0)
 
     def to_dict(self) -> dict:
-        return {"action": self.action, "target_id": self.target_id,
-                "success": self.success, "verified": self.verified,
-                "error_type": self.error_type.value, "message": self.message[:200],
-                "request_id": self.request_id, "timestamp": self.timestamp}
+        return {
+            "execution_id": self.execution_id,
+            "job_id": self.job_id,
+            "tool": self.tool,
+            "action": self.action,
+            "parameters": self.parameters,
+            "target_id": self.target_id,
+            "target_type": self.target_type,
+            "success": self.success,
+            "verified": self.verified,
+            "error_type": self.error_type.value,
+            "message": self.message[:500],
+            "request_id": self.request_id,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "duration_ms": self.duration_ms,
+        }
+
+
+# Backward-compatible name used throughout the existing V7 runtime/tests.
+Receipt = ExecutionReceipt
 
 
 @dataclass
@@ -119,9 +155,13 @@ class AgentJob:
     last_result: str = ""
 
     def snapshot(self) -> dict:
-        return {"agent_job_id": self.job_id, "guild_id": self.guild_id,
-                "status": self.status.value, "step": f"{self.current_step}/{self.total_steps}",
-                "last_tool": self.last_tool}
+        return {
+            "agent_job_id": self.job_id,
+            "guild_id": self.guild_id,
+            "status": self.status.value,
+            "step": f"{self.current_step}/{self.total_steps}",
+            "last_tool": self.last_tool,
+        }
 
 
 @dataclass
@@ -135,10 +175,30 @@ class AgentExecutionResult:
     loop_detected: bool = False
     job: Optional[AgentJob] = None
     receipts: List[Receipt] = field(default_factory=list)
+    execution_required: bool = False
+    request_class: str = "CHAT"
+    requested_count: int = 0
+
+    @property
+    def mutation_receipts(self) -> List[Receipt]:
+        """Exclude discovery/query receipts from mutation completion math."""
+        try:
+            from core.action_meta import get_meta
+            return [r for r in self.receipts if get_meta(r.action).get("operation") != "query"]
+        except Exception:
+            return list(self.receipts)
+
+    @property
+    def verified_count(self) -> int:
+        return sum(1 for r in self.mutation_receipts if r.success and r.verified)
+
+    @property
+    def failed_count(self) -> int:
+        return sum(1 for r in self.mutation_receipts if not r.success)
 
     def summary_line(self) -> str:
-        ok = sum(1 for o in self.observations if o.success and o.verified)
-        return f"{ok}/{len(self.observations)} verified"
+        mutations = self.mutation_receipts
+        return f"{self.verified_count}/{len(mutations)} verified"
 
 
 @dataclass
