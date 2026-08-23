@@ -67,7 +67,7 @@ class AIChatSystem:
                     mode=ChannelMode(c_data["mode"]),
                     persona=c_data.get("persona", ""),
                     system_prompt=c_data.get("system_prompt", ""),
-                    memory_depth=c_data.get("memory_depth", 10),
+                    memory_depth=c_data.get("memory_depth", 50),
                     translate_languages=c_data.get("translate_languages", []),
                     custom_settings=c_data.get("custom_settings", {}),
                     created_at=c_data["created_at"],
@@ -96,7 +96,7 @@ class AIChatSystem:
     def get_guild_settings(self, guild_id: int) -> dict:
         return dm.get_guild_data(guild_id, "ai_chat_settings", {
             "enabled": True,
-            "default_memory_depth": 10,
+            "default_memory_depth": 50,
             "max_channels": 5,
             "allowed_modes": ["general", "help", "rpg", "counselor", "translator"]
         })
@@ -176,7 +176,7 @@ Ensure no trailing commas, comments, or text outside JSON. Lines under 1500 char
             mode=mode,
             persona=persona,
             system_prompt=system_prompt,
-            memory_depth=settings.get("default_memory_depth", 10),
+            memory_depth=settings.get("default_memory_depth", 50),
             translate_languages=[],
             custom_settings={},
             created_at=time.time(),

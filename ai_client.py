@@ -16,6 +16,10 @@ from core.ai_response import new_request_id, classify_http_error, normalize_prov
 
 logger = logging.getLogger(__name__)
 
+# Long-conversation memory: 50+ exchanges kept per guild/user (plan requirement).
+# Override with MEMORY_DEPTH env var; per-guild ai_config.memory_depth wins too.
+MEMORY_DEPTH_DEFAULT = int(os.getenv("MEMORY_DEPTH", "50"))
+
 class AIClientError(Exception):
     def __init__(self, status: int, message: str, error_type=None):
         self.status=status; self.message=message; self.error_type=error_type
@@ -71,7 +75,10 @@ class AIClient:
             try:
                 result=await self._chat_internal(guild_id,user_id,user_input,system_prompt,bundle['api_key'],bundle['provider'],model_override=self._coerce_model_for_provider(guild_id,bundle['provider']),extra_messages=extra_messages)
                 if result.get('_miro_empty'): continue
-                self.report_success(); return result
+                self.report_success()
+                if persist:
+                    await self._persist_exchange(guild_id,user_id,user_input,result)
+                return result
             except AIClientError as e:
                 logger.warning(f"[AI FALLBACK] provider={bundle['provider']} status={e.status}")
                 if e.status not in (401,403,429): raise
@@ -79,11 +86,37 @@ class AIClient:
                 self.report_failure(); raise
         raise AIClientError(503,'All configured AI providers failed')
 
+    @staticmethod
+    async def _persist_exchange(guild_id:int,user_id:int,user_input:str,result:Dict[str,Any]):
+        """Store the exchange so long conversations never lose the user."""
+        try:
+            reply=str((result or {}).get('summary') or (result or {}).get('content') or '')[:4000]
+            if not guild_id or not user_id or not reply.strip():
+                return
+            await history_manager.add_exchange(guild_id,user_id,str(user_input)[:2000],reply)
+        except Exception as e:
+            logger.warning(f"failed to persist conversation exchange: {e}")
+
     async def _chat_internal(self,guild_id,user_id,user_input,system_prompt,api_key,provider,enhanced_input=None,model_override=None,extra_messages=None):
         from data_manager import dm
         model=model_override or dm.get_guild_data(guild_id,'custom_model',self.model) or self.model
         if not AIProviderRegistry.is_chat_model(model): model=AIProviderRegistry().default_model(provider)
         messages=[{'role':'system','content':system_prompt}]
+        # ---- LONG-CONVERSATION MEMORY (50+ exchanges) ----
+        # Per-guild ai_config.memory_depth wins, then MEMORY_DEPTH env, then 50.
+        try:
+            from core.guild_ai_config import GuildAIConfig
+            depth=int(GuildAIConfig.load(guild_id).memory_depth or MEMORY_DEPTH_DEFAULT)
+        except Exception:
+            depth=MEMORY_DEPTH_DEFAULT
+        depth=max(10,min(depth,200))
+        try:
+            history=await history_manager.get_enhanced_context(guild_id,user_id,depth=depth)
+            if history:
+                messages.extend(history[-depth*2:])
+                logger.debug(f"[AI {guild_id}/{user_id}] injected {len(history)} history messages (depth={depth})")
+        except Exception as e:
+            logger.warning(f"history context unavailable: {e}")
         if extra_messages:
             for m in extra_messages:
                 role=m.get('role','user'); content=str(m.get('content',''))

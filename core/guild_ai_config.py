@@ -27,6 +27,7 @@ class GuildAIConfig:
     agent_enabled: bool = True         # allow the AI to execute action plans
     tool_mode: str = "actions"         # actions | readonly
     safety_policy: str = "standard"    # standard | strict
+    memory_depth: int = 50             # conversation exchanges kept per user (50+ = long memory)
 
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -37,7 +38,7 @@ class GuildAIConfig:
         cfg = GuildAIConfig(guild_id=guild_id)
         for f in ("enabled", "provider", "model", "fallback_models", "max_tokens",
                   "temperature", "timeout", "retry_limit", "agent_enabled",
-                  "tool_mode", "safety_policy"):
+                  "tool_mode", "safety_policy", "memory_depth"):
             if f in raw:
                 setattr(cfg, f, raw[f])
         if not isinstance(cfg.fallback_models, list):

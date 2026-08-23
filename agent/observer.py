@@ -33,9 +33,22 @@ class Observer:
         return "\n".join(lines)[:1900]
 
     def observation_message(self, obs: Observation) -> Dict[str, str]:
-        """The reasoning-stream entry for one executed+verified tool call."""
+        """The reasoning-stream entry for one executed+verified tool call.
+        Carries the structured result per the V7 protocol so the model can
+        reason over exact outcomes (tool_call_id/success/verified/result)."""
+        import json as _json
+        structured = ""
+        if obs.receipt is not None:
+            structured = "\n" + _json.dumps({
+                "tool_call_id": obs.receipt.request_id,
+                "tool": obs.tool,
+                "success": obs.success,
+                "verified": obs.verified,
+                "error_type": obs.receipt.error_type.value,
+                "result": {"message": obs.detail[:400]},
+            }, ensure_ascii=False)
         return {"role": "user", "content":
-                f"OBSERVATION after `{obs.tool}`: {obs.render()}\n"
+                f"OBSERVATION after `{obs.tool}`: {obs.render()}{structured}\n"
                 f"If the goal is fully met, reply with the final summary and NO actions."}
 
     def rejection_message(self, name: str, reason: str, suggested=None) -> Dict[str, str]:
@@ -45,8 +58,9 @@ class Observer:
 
     def nudge_message(self) -> Dict[str, str]:
         return {"role": "user", "content":
-                "TEXT_ONLY_TURN: You described an action but called NO tool. "
-                "That is not execution. Call the appropriate tool NOW."}
+                "INVALID_AGENT_TURN: text-only response on an actionable request. "
+                "You described an action but called NO tool. That is not execution. "
+                "Call the appropriate tool NOW."}
 
     def loop_message(self) -> Dict[str, str]:
         return {"role": "user", "content":
