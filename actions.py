@@ -3261,10 +3261,25 @@ class ActionHandler:
         return success, receipt
 
     async def action_get_channel(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
-        """Fetch ONE live channel with full details (read-only)."""
+        """Fetch ONE live channel with full details (read-only).
+        Called with NO target: returns a channel listing so the agent can
+        self-guide instead of dead-ending on 'Channel not found: None'."""
         guild = interaction.guild
         channel_id = self._get_param(params, "channel_id", "id")
         channel_name = self._get_param(params, "channel_name", "name", "channel")
+
+        # Graceful no-target mode: surface the channel menu as the result
+        if not channel_id and not channel_name:
+            listing = [f"#{c.name} (id={c.id})" for c in list(guild.text_channels)[:12]]
+            return True, {
+                "message": ("No target specified. Server channels: "
+                            + ", ".join(listing)
+                            + ". Use find_duplicate_channels / delete_channel "
+                              "with these exact IDs."),
+                "channel_id": "",
+                "channels": listing,
+            }
+
         channel = None
         if channel_id:
             try:

@@ -205,6 +205,11 @@ class AgentRuntime:
                 summary, pending_actions, final_answer, intent = self._parse_turn(ai_result)
                 if intent:
                     result.actions.append({"intent": intent})
+                # Visible reasoning: the board reflects what the agent decided
+                if intent:
+                    self._history.append(f"🧠 intent: {intent}")
+                elif summary:
+                    self._history.append("🧠 reasoning: " + summary[:70])
                 if pending_actions:
                     if summary:
                         messages.append({"role": "assistant", "content": f"(internal plan, not yet executed): {summary}"})
@@ -218,7 +223,11 @@ class AgentRuntime:
                         messages.append({"role": "user", "content":
                                          f"MODEL_RETURNED_TEXT_WITHOUT_TOOL: execution_required=true. "
                                          f"This turn is invalid. Select and call the correct tool NOW. "
-                                         f"Available tools: {tool_menu}"})
+                                         f"Available tools: {tool_menu}"
+                                         + (" For duplicate-channel cleanup: call "
+                                            "find_duplicate_channels {} first, then "
+                                            "bulk_delete_channels with the returned IDs."
+                                           if "duplicate" in self._original_request.lower() else "")})
                         await self._progress(f"🔁 Replanning after text-only model turn ({self._nudges}/3)…")
                         continue
 
