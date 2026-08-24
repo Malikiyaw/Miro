@@ -207,3 +207,23 @@ Traceback (most recent call last):
     success, info = await handler.dispatch(ctx, name, params)
   File "<stdin>", line 15, in dispatch
 NameError: name 'g' is not defined
+2026-08-24 10:41:18,272 - MiroBot - ERROR - exception:104 - Agent tool cleanup_duplicate_channels raised
+Traceback (most recent call last):
+  File "/workspace/cad48349-765c-4c08-becd-f0aeb983a551/sessions/agent_161b71b2-fb0d-4197-be02-e6a6e5f37e38/./agent/executor.py", line 213, in run
+    success, info = await handler.dispatch(ctx, name, params)
+  File "<stdin>", line 44, in dispatch
+  File "/workspace/cad48349-765c-4c08-becd-f0aeb983a551/sessions/agent_161b71b2-fb0d-4197-be02-e6a6e5f37e38/./actions.py", line 1, in <module>
+    import discord
+ModuleNotFoundError: No module named 'discord'
+2026-08-24 10:42:18,178 - MiroBot - ERROR - exception:104 - Agent tool cleanup_duplicate_channels raised
+Traceback (most recent call last):
+  File "/workspace/cad48349-765c-4c08-becd-f0aeb983a551/sessions/agent_161b71b2-fb0d-4197-be02-e6a6e5f37e38/./agent/executor.py", line 213, in run
+    success, info = await handler.dispatch(ctx, name, params)
+  File "<stdin>", line 43, in spy
+  File "/workspace/cad48349-765c-4c08-becd-f0aeb983a551/sessions/agent_161b71b2-fb0d-4197-be02-e6a6e5f37e38/./actions.py", line 755, in dispatch
+    success, undo_data = await method(interaction, params)
+  File "/workspace/cad48349-765c-4c08-becd-f0aeb983a551/sessions/agent_161b71b2-fb0d-4197-be02-e6a6e5f37e38/./actions.py", line 3215, in action_cleanup_duplicate_channels
+    sys_protected = system_protected_channel_ids(guild.id, guild)
+  File "/workspace/cad48349-765c-4c08-becd-f0aeb983a551/sessions/agent_161b71b2-fb0d-4197-be02-e6a6e5f37e38/./core/action_meta.py", line 257, in system_protected_channel_ids
+    for cid in (guild.system_channel_id, guild.rules_channel_id):
+AttributeError: 'G' object has no attribute 'system_channel_id'
