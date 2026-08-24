@@ -53,12 +53,17 @@ class Verifier:
                     # Re-run the deterministic matcher against LIVE state —
                     # every non-protected duplicate must be gone.
                     nm = str(params.get("name") or params.get("channel_name") or "").strip()
-                    if not nm:
-                        return False
-                    from agent.tools import find_duplicate_channels
-                    data = find_duplicate_channels(guild, nm,
-                                                   params.get("protected_channel_id"))
-                    return not data["duplicates"]
+                    if nm:
+                        from agent.tools import find_duplicate_channels
+                        data = find_duplicate_channels(guild, nm,
+                                                       params.get("protected_channel_id"))
+                        return not data["duplicates"]
+                    # Server-wide mode (no name): NO duplicate groups may remain
+                    from agent.tools import find_all_duplicate_groups
+                    prot = str(params.get("protected_channel_id") or "")
+                    scan = find_all_duplicate_groups(
+                        guild, protected_channel_ids=[prot] if prot else [])
+                    return not scan["groups"]
                 ids = params.get("channel_ids") or params.get("channels") or []
                 if not isinstance(ids, list) or not ids:
                     return False

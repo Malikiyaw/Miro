@@ -254,7 +254,9 @@ def system_protected_channel_ids(guild_id: int, guild=None) -> set:
             if isinstance(field, (str, int)) and str(field).isdigit() and len(str(field)) >= 17:
                 ids.add(str(field))
     if guild is not None:
-        for cid in (guild.system_channel_id, guild.rules_channel_id):
+        for cid in (getattr(guild, "system_channel_id", None),
+                    getattr(guild, "rules_channel_id", None)):
             if cid:
                 ids.add(str(cid))
+    return ids
     return ids

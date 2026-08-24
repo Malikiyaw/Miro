@@ -3209,18 +3209,29 @@ class ActionHandler:
         name = str(params.get("name") or params.get("channel_name") or "").strip()
         protected_id = str(params.get("protected_channel_id")
                            or params.get("exclude_channel_id") or "")
-        if not name:
-            return False, {"error": "cleanup_duplicate_channels requires 'name'."}
 
         from core.agent_runtime import find_duplicate_channels
-        data = find_duplicate_channels(guild, name, protected_channel_id or None)
-        duplicates = [m["id"] for m in data["duplicates"]]
-
         from core.action_meta import system_protected_channel_ids
         sys_protected = system_protected_channel_ids(guild.id, guild)
 
+        # SERVER-WIDE MODE: no name -> clean duplicates across EVERY group
+        # ('delete the duplicate channels' with no specific target).
+        if not name:
+            from agent.tools import find_all_duplicate_groups
+            scan = find_all_duplicate_groups(guild, protected_channel_ids=[protected_id] if protected_id else [])
+            all_dups = []
+            for grp in scan["groups"]:
+                for dup in grp["duplicates"]:
+                    if dup["id"] not in sys_protected:
+                        all_dups.append(dup)
+            groups_processed = len(scan["groups"])
+        else:
+            data = find_duplicate_channels(guild, name, protected_id or None)
+            all_dups = list(data["duplicates"])
+            groups_processed = 1
+
         deleted, verified, failed = 0, 0, []
-        for dup in data["duplicates"]:
+        for dup in all_dups:
             cid = int(dup["id"])
             ch = guild.get_channel(cid)
             if ch is None:
@@ -3244,20 +3255,21 @@ class ActionHandler:
                                "reason": "delete accepted but channel still present"})
             await asyncio.sleep(0.4)
 
-        kept = data["kept"]["name"] if data["kept"] else None
+        kept = data["kept"]["name"] if (name and data.get("kept")) else None
         receipt = {
             "message": (f"Cleanup complete: {deleted} deleted, {verified} verified, "
                         f"{len(failed)} failed."
                         + (f" Preserved: #{kept}" if kept else "")),
-            "target_name": name,
-            "protected_channel": data["protected_channel"],
-            "requested": len(duplicates),
+            "target_name": name or "(all duplicate groups)",
+            "protected_channel": data.get("protected_channel", "") if name else protected_id,
+            "requested": len(all_dups),
             "deleted": deleted,
             "failed": len(failed),
             "verified": verified,
+            "groups_processed": groups_processed,
             "failed_items": failed[:10],
         }
-        success = verified > 0 or not duplicates
+        success = verified > 0 or not all_dups
         return success, receipt
 
     async def action_get_channel(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:

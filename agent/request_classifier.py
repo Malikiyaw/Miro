@@ -65,6 +65,8 @@ def classify_request(text: str) -> RequestClassification:
         id_like = set(re.findall(
             r"\b(?:channel|role|user|member|message|msg|id)\s+(\d+)\b", low))
         numbers = [n for n in re.findall(r"\b(\d+)\b", low) if n not in id_like]
+        # Snowflake IDs (Discord object references/mentions) are not quantities
+        numbers = [n for n in numbers if int(n) <= 999]
         requested = int(numbers[0]) if numbers else 0
         if requested > 1:
             multi = True
