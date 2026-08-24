@@ -13,14 +13,10 @@ from logger import logger
 from .recovery import with_retry
 from .state import ErrorType, Receipt, classify_error
 
-TOOL_TIMEOUTS = {"query": 15.0, "default": 30.0}
-
-
 def tool_timeout(name: str) -> float:
-    from core.action_meta import get_meta
-    if get_meta(name).get("operation") == "query":
-        return TOOL_TIMEOUTS["query"]
-    return TOOL_TIMEOUTS["default"]
+    """Delegate to the central policy map (batch tools get long windows)."""
+    from agent.policies import tool_timeout as policy_timeout
+    return policy_timeout(name)
 
 
 def _normalize_channel_name(value: str) -> str:

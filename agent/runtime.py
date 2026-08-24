@@ -339,6 +339,20 @@ class AgentRuntime:
                 if receipt.success:
                     await self._progress(f"🔎 Verifying `{name}` against live Discord state…")
                     receipt.verified = await self.verifier.verify(self.guild, name, params)
+                elif receipt.error_type == ErrorType.TIMEOUT:
+                    # The tool was cancelled at the timeout window, but batch
+                    # deletions may still have completed server-side. Check
+                    # live state before declaring failure.
+                    if await self.verifier.verify(self.guild, name, params):
+                        receipt.success = True
+                        receipt.verified = True
+                        receipt.error_type = ErrorType.NONE
+                        receipt.message += " (completed after timeout window)"
+                        logger.info(f"[AGENT] {name}: live state confirms completion after timeout")
+                    else:
+                        # Nothing actually changed — safe honest failure
+                        receipt.message = (f"tool timed out after "
+                                           f"{getattr(self,'_last_timeout',30):.0f}s and no change detected")
                 result.receipts.append(receipt)
                 obs = Observation(tool=name, params=params, success=receipt.success, verified=receipt.verified, detail=receipt.message, receipt=receipt)
                 result.observations.append(obs)

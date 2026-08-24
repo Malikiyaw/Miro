@@ -31,10 +31,17 @@ DANGEROUS_TOOLS: Set[str] = {
     "cleanup_duplicate_channels",
 }
 
-TOOL_TIMEOUTS = {"query": 15.0, "default": 30.0}
+TOOL_TIMEOUTS = {"query": 15.0, "default": 30.0,
+                 # Batch deletions: 0.25-0.4s per target + API latency.
+                 # 30s killed real cleanups mid-run and discarded receipts.
+                 "cleanup_duplicate_channels": 300.0,
+                 "bulk_delete_channels": 300.0,
+                 "bulk_delete_messages": 120.0}
 
 
 def tool_timeout(name: str) -> float:
+    if name in TOOL_TIMEOUTS:
+        return TOOL_TIMEOUTS[name]
     from core.action_meta import get_meta
     if get_meta(name).get("operation") == "query":
         return TOOL_TIMEOUTS["query"]

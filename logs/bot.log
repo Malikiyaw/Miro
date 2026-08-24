@@ -282,3 +282,5 @@ AttributeError: 'G' object has no attribute 'system_channel_id'
 2026-08-24 10:50:34,904 - MiroBot - DEBUG - debug:84 - server context injection failed: 'method' object is not iterable
 2026-08-24 10:50:34,905 - MiroBot - DEBUG - debug:84 - server context injection failed: 'method' object is not iterable
 2026-08-24 10:50:35,029 - MiroBot - WARNING - warning:92 - Unknown action: inspect_channel
+2026-08-24 11:00:17,253 - MiroBot - DEBUG - debug:84 - server context injection failed: 'method' object is not iterable
+2026-08-24 11:00:17,254 - MiroBot - DEBUG - debug:84 - server context injection failed: 'method' object is not iterable
