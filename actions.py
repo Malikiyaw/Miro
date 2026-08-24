@@ -264,6 +264,7 @@ class ActionHandler:
         "analyze_server_state", "extract_online_users", "send_notification", "create_task", "update_profile",
         # Server Query Actions
         "query_server_info", "query_channels", "query_roles", "query_members", "query_member_details",
+        "get_channel",
         "query_economy_leaderboard", "query_xp_leaderboard", "query_pending_applications",
         "query_active_shifts", "query_recent_messages",
         # System connection actions
@@ -760,8 +761,14 @@ class ActionHandler:
             self._publish_action_event(name, interaction, success=success)
             return success, undo_data
         else:
+            import difflib
+            suggestions = difflib.get_close_matches(name, self.ALLOWED_ACTIONS, n=3, cutoff=0.4)
+            detail = f"Unknown action '{name}'."
+            if suggestions:
+                detail += f" Did you mean: {', '.join(suggestions)}?"
             logger.warning("Unknown action: %s", name)
-            return False, None
+            return False, {"error": detail, "error_type": "UNKNOWN_TOOL",
+                           "suggestions": suggestions}
 
     def _publish_action_event(self, name: str, interaction, success: bool):
         """Fan the executed action out on the internal event bus (analytics, etc.)."""
@@ -3252,6 +3259,33 @@ class ActionHandler:
         }
         success = verified > 0 or not duplicates
         return success, receipt
+
+    async def action_get_channel(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        """Fetch ONE live channel with full details (read-only)."""
+        guild = interaction.guild
+        channel_id = self._get_param(params, "channel_id", "id")
+        channel_name = self._get_param(params, "channel_name", "name", "channel")
+        channel = None
+        if channel_id:
+            try:
+                channel = guild.get_channel(int(str(channel_id).strip().lstrip("<#").rstrip(">")))
+            except (ValueError, TypeError):
+                channel = None
+        if channel is None and channel_name:
+            needle = str(channel_name).strip().lower().lstrip("#")
+            channel = next((c for c in guild.text_channels if c.name.lower() == needle), None)
+        if channel is None:
+            return False, {"error": f"Channel not found: {channel_id or channel_name}",
+                           "error_type": "NOT_FOUND"}
+        return True, {
+            "message": f"#{channel.name} (id={channel.id})",
+            "channel_id": str(channel.id),
+            "name": channel.name,
+            "type": str(getattr(channel, "type", "text")),
+            "category_id": str(channel.category_id) if channel.category_id else "",
+            "position": getattr(channel, "position", 0),
+            "topic": getattr(channel, "topic", "") or "",
+        }
 
     async def action_find_duplicate_channels(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
         """Deterministic duplicate-channel finder. Reads REAL channel data via
