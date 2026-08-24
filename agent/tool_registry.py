@@ -44,6 +44,17 @@ TOOL_SPECS: Dict[str, Dict[str, Any]] = {
     "configure_verification": _spec("configure_verification", "Configure verification.", {}, permission="administrator", danger="medium"),
 }
 
+
+REQUIRED_PARAMS = {
+    "create_channel": [("name", "channel name")],
+    "create_role": [("name", "role name")],
+    "delete_channel": [("channel_id", "channel ID")],
+    "assign_role": [("user_id", "user ID"), ("role_id", "role ID")],
+    "ban_user": [("user_id", "user ID")],
+    "kick_user": [("user_id", "user ID")],
+    "send_message": [("content", "message text")],
+}
+
 class ToolRegistry:
     def get(self, name: str) -> Dict[str, Any]:
         meta = dict(_get_meta(name)); spec = dict(TOOL_SPECS.get(name, {}))
@@ -57,3 +68,33 @@ class ToolRegistry:
     def validate(self, request_text: str, action_name: str): return validate_action(request_text, action_name)
 
 tool_registry = ToolRegistry()
+
+def ensure_full_catalog(allowed_names) -> int:
+    """Generate TOOL_SPECS for every allowed action lacking one."""
+    from core.action_meta import _infer_action_meta
+    created = 0
+    for name in sorted(set(allowed_names)):
+        if name in TOOL_SPECS:
+            continue
+        meta = _infer_action_meta(name)
+        fields = []
+        from agent.tool_registry import REQUIRED_PARAMS as _RP
+        for key, label in _RP.get(name, []):
+            typ = "integer" if key.endswith("_id") else \
+                  "boolean" if key.startswith("enabled") else "string"
+            fields.append((key, {"type": typ, "required": True}, label))
+        props = {k: v for k, v, _l in fields}
+        required = [k for k, v, _l in fields if v.get("required")]
+        TOOL_SPECS[name] = {
+            "description": f"{meta['operation'].title()} {meta['object_type']} — "
+                           f"{name.replace('_',' ')}",
+            "parameters": {"type": "object", "properties": props,
+                           "required": required},
+            "permission": meta["permission"], "danger": meta["danger"],
+            "verifier": meta["verify"],
+            "retries": 1 if meta["danger"] != "none" else 0,
+        }
+        created += 1
+    return created
+
+

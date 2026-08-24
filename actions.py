@@ -331,6 +331,19 @@ class ActionHandler:
         self._action_log = []
         self._setup_id = None
         self._artifacts = []
+        # Universal metadata: every allowed action gets object/operation/
+        # danger/permission/timeout coverage (V6 "all tools" mandate).
+        try:
+            from core.action_meta import ensure_metadata
+            ensure_metadata(self.ALLOWED_ACTIONS)
+        except Exception as e:
+            logger.warning(f"metadata fill failed: {e}")
+        # Native schema catalog for every tool (provider advertising)
+        try:
+            from agent.tool_registry import ensure_full_catalog
+            ensure_full_catalog(self.ALLOWED_ACTIONS)
+        except Exception as e:
+            logger.warning(f"tool catalog fill failed: {e}")
         self._guild_context = None
 
     def _ensure_bot(self):

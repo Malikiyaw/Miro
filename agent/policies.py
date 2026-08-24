@@ -42,6 +42,10 @@ TOOL_TIMEOUTS = {"query": 15.0, "default": 30.0,
 def tool_timeout(name: str) -> float:
     if name in TOOL_TIMEOUTS:
         return TOOL_TIMEOUTS[name]
+    if name.startswith(("setup_", "configure")):
+        return 300.0
+    if name.startswith("create_"):
+        return 120.0
     from core.action_meta import get_meta
     if get_meta(name).get("operation") == "query":
         return TOOL_TIMEOUTS["query"]

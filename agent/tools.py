@@ -61,6 +61,25 @@ def _is_internal_context(params: Dict[str, Any]) -> bool:
     return bool(params.get("_agent_request"))
 
 
+
+_REQUIRED_PARAMS = {
+    "create_channel": [("name", "channel name")],
+    "create_text_channel": [("name", "channel name")],
+    "create_voice_channel": [("name", "channel name")],
+    "create_category": [("name", "category name")],
+    "create_role": [("name", "role name")],
+    "delete_channel": [("channel_id", "channel ID")],
+    "delete_role": [("role_id", "role ID")],
+    "assign_role": [("user_id", "user ID"), ("role_id", "role ID")],
+    "remove_role": [("user_id", "user ID"), ("role_id", "role ID")],
+    "ban_user": [("user_id", "user ID")],
+    "kick_user": [("user_id", "user ID")],
+    "warn_user": [("user_id", "user ID")],
+    "timeout_user": [("user_id", "user ID"), ("duration", "duration seconds")],
+    "send_message": [("content", "message text")],
+    "send_dm": [("user_id", "user ID"), ("content", "message text")],
+}
+
 def validate_params(name: str, params: Dict[str, Any]) -> tuple:
     """Schema validation. Dependency-repairable calls are allowed through to the executor."""
     if name == "find_duplicate_channels":

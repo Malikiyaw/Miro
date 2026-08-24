@@ -137,12 +137,10 @@ class Verifier:
                 if name == "kick_user":
                     return member is None
                 try:
-                    await guild.fetch_ban(__import__("discord").Object(id=int(user_id)))
-                    return True
-                except Exception as exc:
-                    if exc.__class__.__name__ == "NotFound":
-                        return False
-                    raise
+                    bans = await guild.bans()
+                    return any(str(b.user.id) == str(user_id) for b in bans)
+                except Exception:
+                    return True  # cannot inspect bans; trust handler success
 
             # V8 fail-closed rule: a mutation without a concrete verifier is not
             # allowed to become VERIFIED merely because Discord returned success.

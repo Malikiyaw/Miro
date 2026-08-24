@@ -260,3 +260,72 @@ def system_protected_channel_ids(guild_id: int, guild=None) -> set:
                 ids.add(str(cid))
     return ids
     return ids
+
+
+# --------------------------------------------------------------------------- #
+# Universal metadata fill: EVERY action gets object/operation/danger/etc.      #
+# --------------------------------------------------------------------------- #
+
+def _infer_action_meta(name):
+    low = name.lower()
+    if low.startswith(("query_", "analyze_", "extract_")) or "_list" in low:
+        operation = "query"
+    elif low.startswith(("delete_", "remove_", "bulk_delete")) or low in (
+            "kick_user", "ban_user", "softban_user"):
+        operation = "delete"
+    elif low.startswith(("create_", "add_", "make_", "new_", "announce", "poll",
+                         "schedule_", "give_")):
+        operation = "create"
+    elif low.startswith(("edit_", "set_", "rename_", "move_", "lock_", "unlock_",
+                         "slowmode", "pin_", "unpin", "follow_", "allow_",
+                         "deny_", "change_", "update_", "clear_", "connect_",
+                         "assign_", "deafen_", "mute_")):
+        operation = "edit"
+    else:
+        operation = "execute"
+
+    if any(k in low for k in ("channel", "category", "thread")):
+        object_type = "channel"
+    elif "role" in low:
+        object_type = "role"
+    elif any(k in low for k in ("user", "member", "nickname", "timeout", "warn",
+                                "deafen", "mute", "ban", "kick", "softban")):
+        object_type = "member"
+    elif any(k in low for k in ("message", "reaction", "poll", "embed", "dm",
+                                "announce", "pin")):
+        object_type = "message"
+    else:
+        object_type = "server"
+
+    if operation == "delete" or low.startswith(("ban_", "kick_", "softban_"))             or "purge" in low:
+        danger = "high"
+    elif operation == "create" or low.startswith(("setup_",)) or operation == "edit":
+        danger = "medium"
+    else:
+        danger = "none" if operation == "query" else "low"
+
+    permission = {
+        "channel": "manage_channels", "role": "manage_roles",
+        "member": ("ban_members" if "ban" in low else
+                   "kick_members" if "kick" in low else "moderate_members"),
+        "message": "send_messages",
+    }.get(object_type, "administrator")
+
+    verify = "live_state" if operation in ("delete", "create") else "none"
+    return {"object_type": object_type, "operation": operation, "danger": danger,
+            "permission": permission, "batch": False,
+            "confirm": danger == "high", "verify": verify}
+
+
+def ensure_metadata(names):
+    """Fill metadata gaps for any action missing an explicit entry."""
+    filled = []
+    for name in names:
+        if name in ACTION_META:
+            continue
+        try:
+            ACTION_META[name] = _infer_action_meta(name)
+            filled.append(name)
+        except Exception:
+            continue
+    return filled
