@@ -42,6 +42,53 @@ TOOL_SPECS: Dict[str, Dict[str, Any]] = {
     "configure_tickets": _spec("configure_tickets", "Configure ticket system.", {}, permission="administrator", danger="medium"),
     "configure_staff_system": _spec("configure_staff_system", "Configure staff system.", {}, permission="administrator", danger="medium"),
     "configure_verification": _spec("configure_verification", "Configure verification.", {}, permission="administrator", danger="medium"),
+    # ---- LIVE automations & prefix commands (execute immediately, no restart) ----
+    "create_prefix_command": _spec(
+        "create_prefix_command",
+        "Create a LIVE custom prefix command. Example: name='welcome', code='Hey {user}, welcome to {server}!' makes !welcome work instantly.",
+        {"name": {"type": "string", "required": True},
+         "code": {"type": "string", "required": True}},
+        permission="administrator", danger="low"),
+    "delete_prefix_command": _spec(
+        "delete_prefix_command",
+        "Delete a custom prefix command by name.",
+        {"cmd_name": {"type": "string", "required": True}},
+        permission="administrator", danger="medium"),
+    "list_prefix_commands": _spec(
+        "list_prefix_commands",
+        "List all custom prefix commands for this server.",
+        {},
+        permission="none", danger="none"),
+    "create_automation": _spec(
+        "create_automation",
+        "Create a LIVE automation. type='scheduled_task' runs an action on a cron schedule (pass cron). type='auto_responder' replies when keywords appear (pass keywords list + response). type='reminder' sends a message after duration seconds (pass response). All fire for real — no restart needed.",
+        {"type": {"type": "string", "required": True},
+         "name": {"type": "string", "required": True},
+         "response": {"type": "string", "required": False},
+         "cron": {"type": "string", "required": False},
+         "duration": {"type": "integer", "required": False},
+         "keywords": {"type": "array", "required": False},
+         "action_type": {"type": "string", "required": False},
+         "channel_id": {"type": "integer", "required": False}},
+        permission="administrator", danger="low"),
+    "delete_automation": _spec(
+        "delete_automation",
+        "Delete an automation by exact name and cancel its scheduled job.",
+        {"name": {"type": "string", "required": True}},
+        permission="administrator", danger="medium"),
+    "list_automations": _spec(
+        "list_automations",
+        "List all LIVE automations registered on this server.",
+        {},
+        permission="none", danger="none"),
+    "schedule_ai_action": _spec(
+        "schedule_ai_action",
+        "Schedule any Miro action to run on a cron schedule (LIVE via TaskScheduler).",
+        {"name": {"type": "string", "required": False},
+         "cron": {"type": "string", "required": True},
+         "action_type": {"type": "string", "required": False},
+         "channel_id": {"type": "integer", "required": False}},
+        permission="administrator", danger="medium"),
 }
 
 
@@ -53,6 +100,12 @@ REQUIRED_PARAMS = {
     "ban_user": [("user_id", "user ID")],
     "kick_user": [("user_id", "user ID")],
     "send_message": [("content", "message text")],
+    # LIVE automations & prefix commands
+    "create_prefix_command": [("name", "command name (without prefix)"), ("code", "response text")],
+    "delete_prefix_command": [("cmd_name", "command name")],
+    "create_automation": [("type", "scheduled_task | auto_responder | reminder"), ("name", "automation name")],
+    "delete_automation": [("name", "automation name")],
+    "schedule_ai_action": [("cron", "cron expression, e.g. '0 12 * * *'")],
 }
 
 class ToolRegistry:

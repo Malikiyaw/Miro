@@ -3,6 +3,13 @@ import re as _re
 from typing import Any, Dict, List
 
 
+def _created_at_str(created_at) -> str:
+    """Accept datetime objects or pre-formatted strings (tests/stubs)."""
+    if not created_at:
+        return ""
+    return created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
+
+
 def find_duplicate_channels_from_list(channels: List[Dict[str, Any]], name: str,
                                       protected_channel_id=None) -> Dict[str, Any]:
     def normalize(s: str) -> str:
@@ -30,7 +37,7 @@ def find_duplicate_channels(guild, name: str = "", protected_channel_id=None, ex
     matches, duplicates, kept = [], [], None
     for channel in guild.text_channels:
         if normalize(channel.name) == target:
-            entry = {"id": str(channel.id), "name": channel.name, "category_id": str(channel.category_id) if channel.category_id else "", "created_at": channel.created_at.isoformat() if channel.created_at else ""}
+            entry = {"id": str(channel.id), "name": channel.name, "category_id": str(channel.category_id) if channel.category_id else "", "created_at": _created_at_str(channel.created_at)}
             matches.append(entry)
             if entry["id"] == protected_id: kept = entry
             else: duplicates.append(entry)
@@ -46,7 +53,7 @@ def find_all_duplicate_groups(guild, protected_channel_ids=None) -> Dict[str, An
     for channel in guild.text_channels:
         base = normalize(channel.name)
         if not base: continue
-        groups.setdefault(base, []).append({"id": str(channel.id), "name": channel.name, "category_id": str(channel.category_id) if channel.category_id else "", "created_at": channel.created_at.isoformat() if channel.created_at else ""})
+        groups.setdefault(base, []).append({"id": str(channel.id), "name": channel.name, "category_id": str(channel.category_id) if channel.category_id else "", "created_at": _created_at_str(channel.created_at)})
     out = []
     for base, members in sorted(groups.items()):
         if len(members) < 2: continue

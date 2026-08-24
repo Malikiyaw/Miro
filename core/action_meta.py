@@ -124,6 +124,28 @@ ACTION_META: Dict[str, Dict[str, Any]] = {
     "connect_systems":       {"object_type": "server", "operation": "edit", "danger": "medium",
                               "permission": "administrator", "batch": False, "confirm": False,
                               "verify": "none"},
+    # ---- LIVE automations & prefix commands ----
+    "create_prefix_command": {"object_type": "server", "operation": "create", "danger": "low",
+                              "permission": "administrator", "batch": False, "confirm": False,
+                              "verify": "none"},
+    "delete_prefix_command": {"object_type": "server", "operation": "delete", "danger": "medium",
+                              "permission": "administrator", "batch": False, "confirm": False,
+                              "verify": "none"},
+    "list_prefix_commands":  {"object_type": "server", "operation": "query", "danger": "none",
+                              "permission": "none", "batch": False, "confirm": False,
+                              "verify": "none"},
+    "create_automation":     {"object_type": "server", "operation": "create", "danger": "low",
+                              "permission": "administrator", "batch": False, "confirm": False,
+                              "verify": "none"},
+    "delete_automation":     {"object_type": "server", "operation": "delete", "danger": "medium",
+                              "permission": "administrator", "batch": False, "confirm": False,
+                              "verify": "none"},
+    "list_automations":      {"object_type": "server", "operation": "query", "danger": "none",
+                              "permission": "none", "batch": False, "confirm": False,
+                              "verify": "none"},
+    "schedule_ai_action":    {"object_type": "server", "operation": "create", "danger": "medium",
+                              "permission": "administrator", "batch": False, "confirm": False,
+                              "verify": "none"},
 }
 
 DEFAULT_META = {"object_type": "unknown", "operation": "unknown", "danger": "medium",
@@ -193,6 +215,12 @@ def validate_action(request_text: str, action_name: str) -> Tuple[bool, str, Lis
         return True, "", []          # read/query tools always allowed
 
     if meta["object_type"] == object_type:
+        return True, "", []
+    # Server-level operations (automations, prefix commands, system setup)
+    # cannot semantically mismatch a mentioned object — e.g. "create an
+    # automation that sends a message daily" mentions 'message' but the tool
+    # legitimately operates on the server.
+    if meta["object_type"] == "server":
         return True, "", []
 
     suggested = CANONICAL.get((object_type, operation), [])

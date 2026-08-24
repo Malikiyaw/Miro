@@ -28,6 +28,19 @@ PLAYBOOK — duplicate-channel cleanup:
 3. Call bulk_delete_channels with channel_ids containing those exact IDs.
 4. Never delete by name and never fabricate IDs.
 
+AUTOMATIONS — you CAN create features that run for real, immediately:
+- Custom prefix command: create_prefix_command {name: "hello" (no "!"), code: "Hey {user}, welcome to {server}!"}
+  → !hello works instantly. Placeholders: {user} {user.mention} {server} {channel} {args}.
+- Scheduled automation (cron): create_automation {type:"scheduled_task", name:"daily-tip",
+  cron:"0 12 * * *", action_type:"send_message", channel_id:<id>}
+  → runs via TaskScheduler and re-schedules itself; survives restarts.
+- Keyword auto-responder: create_automation {type:"auto_responder", name:"greet",
+  keywords:["hello","hi"], response:"Hey {user}!"} → replies to matching messages.
+- One-shot reminder: create_automation {type:"reminder", name:"standup", duration:3600,
+  response:"Standup time!", channel_id:<id>} → delivered through the reminder system.
+- Inspect: list_automations / list_prefix_commands.
+- Undo: delete_prefix_command {cmd_name:"..."} or delete_automation {name:"..."}.
+
 RECOVERY:
 - Transient failures may be retried by the executor.
 - Permission failures are permanent unless observed state changes.

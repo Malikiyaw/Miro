@@ -130,6 +130,15 @@ class AutoResponderSystem:
                 if match:
                     captured = match.group(1) if match.groups() else match.group(0)
                     response = response.replace("{capture}", captured).replace("{x}", captured)
+
+        # Live template substitution ({user} {server} {channel} {args}) for
+        # agent-created responders — no-op when ActionHandler is unavailable.
+        _ah = getattr(self.bot, "action_handler", None)
+        if _ah is not None and hasattr(_ah, "_render_template"):
+            try:
+                response = _ah._render_template(response, message)
+            except Exception:
+                pass
         
         # Delete original message if configured
         if responder.get("delete_trigger", False):

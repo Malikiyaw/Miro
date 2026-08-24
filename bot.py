@@ -245,6 +245,12 @@ class MiroBot(commands.Bot):
         # Start the shared task scheduler (fires reminders, giveaways, AI tasks)
         await self.task_scheduler.start()
 
+        # Rehydrate LIVE agent-created cron automations (survive restarts)
+        try:
+            self._restore_automations()
+        except Exception as e:
+            logger.error(f"Automation restore failed: {e}")
+
         # Start system monitors (sync methods - no await)
         self.anti_raid.start_monitoring()
 
@@ -415,11 +421,149 @@ class MiroBot(commands.Bot):
             await self.modmail.handle_dm(message)
             return
 
+        # LIVE custom prefix commands (agent-created via create_prefix_command).
+        # Fast-path BEFORE the AI pipeline: a matched command executes instantly
+        # and AI is skipped entirely. Zero restart needed.
+        try:
+            if await self._try_custom_prefix_command(message):
+                return
+        except Exception as e:
+            logger.error(f"Custom prefix command fast-path error: {e}")
+
         # Process commands
         await self.process_commands(message)
 
         # Handle passive system triggers
         await self._handle_passive_systems(message)
+
+    async def _try_custom_prefix_command(self, message) -> bool:
+        """Execute a stored custom '!name' command synchronously.
+        Returns True when the message was handled (caller must skip further processing)."""
+        if getattr(message, "guild", None) is None:
+            return False
+        handler = getattr(self, "action_handler", None)
+        if handler is None:
+            return False
+        content = message.content or ""
+        if not content.strip():
+            return False
+        prefix = dm.get_guild_data(message.guild.id, "prefix", "!") or "!"
+        if not content.startswith(prefix):
+            return False
+        rest = content[len(prefix):].strip()
+        if not rest:
+            return False
+        cmds = dm.get_guild_data(message.guild.id, "custom_commands", {}) or {}
+        if not cmds:
+            return False
+        lowered = rest.lower()
+        # Longest-key match wins so "help economy" beats a plain "help" command
+        hit_key = None
+        hit_norm = None
+        for key in cmds.keys():
+            norm = str(key).lower().lstrip("!").strip()
+            if not norm:
+                continue
+            if lowered == norm or lowered.startswith(norm + " "):
+                if hit_norm is None or len(norm) > len(hit_norm):
+                    hit_norm = norm
+                    hit_key = key
+        if hit_key is None:
+            return False
+        code = cmds.get(hit_key)
+        if code is None:
+            return False
+        logger.info(f"LIVE custom command !{hit_key} triggered by {message.author} (guild {message.guild.id})")
+        try:
+            await handler.execute_custom_command(message, code, str(hit_key))
+        except Exception as e:
+            logger.error(f"Custom command !{hit_key} execution failed: {e}")
+        # Count as handled regardless — the command path already responded,
+        # falling through to AI would produce a confusing double reply.
+        return True
+
+    def _restore_automations(self):
+        """Rehydrate LIVE agent-created cron automations from guild data so they
+        survive restarts. Reminders/auto-responders restore themselves via their
+        own monitors; only scheduled_task cron jobs need re-scheduling here."""
+        try:
+            from croniter import croniter
+        except Exception:
+            logger.warning("croniter unavailable — cannot restore cron automations")
+            return
+        from actions import ScheduledTaskInteraction
+        handler = getattr(self, "action_handler", None)
+        if handler is None:
+            return
+        now = time.time()
+        restored = 0
+        for guild in list(self.guilds):
+            autos = dm.get_guild_data(guild.id, "automations", {}) or {}
+            changed = False
+            for name, entry in list(autos.items()):
+                try:
+                    if not isinstance(entry, dict) or entry.get("type") != "scheduled_task":
+                        continue
+                    cron = entry.get("cron")
+                    sched_handler = entry.get("handler")
+                    if not cron or not sched_handler:
+                        continue
+                    try:
+                        nxt = float(entry.get("next_run") or 0.0)
+                    except (TypeError, ValueError):
+                        nxt = 0.0
+                    if nxt <= now:
+                        try:
+                            nxt = croniter(cron, dt.datetime.now()).get_next(float)
+                        except Exception as e:
+                            logger.warning(f"Automation '{name}' invalid cron '{cron}' ({e}); skipping")
+                            continue
+                    params = entry.get("params") or {}
+                    if not isinstance(params, dict):
+                        params = {}
+                    channel_id = entry.get("channel_id")
+                    if channel_id is not None and "channel_id" not in params and "channel" not in params:
+                        params = dict(params)
+                        params["channel_id"] = channel_id
+
+                    async def _run(_name=name, _cron=cron, _h=sched_handler, _p=dict(params), _gid=guild.id):
+                        try:
+                            mock = ScheduledTaskInteraction(self, _gid)
+                            if mock.guild is None:
+                                logger.warning(f"Automation '{_name}': guild {_gid} gone; dropped")
+                                return
+                            cid = (_p or {}).get("channel_id")
+                            if cid:
+                                try:
+                                    ch = self.get_channel(int(str(cid)))
+                                    if ch is not None:
+                                        mock.channel = ch
+                                except (TypeError, ValueError):
+                                    pass
+                            await handler.dispatch(mock, _h, dict(_p))
+                            try:
+                                n2 = croniter(_cron, dt.datetime.now()).get_next(float)
+                                task_scheduler.schedule_task(n2, _run)
+                                autos_now = dm.get_guild_data(_gid, "automations", {}) or {}
+                                if _name in autos_now:
+                                    autos_now[_name]["next_run"] = n2
+                                    dm.update_guild_data(_gid, "automations", autos_now)
+                            except Exception as e2:
+                                logger.error(f"Automation '{_name}' reschedule failed: {e2}")
+                        except Exception as e:
+                            logger.error(f"Restored automation '{_name}' failed: {e}")
+
+                    tid = task_scheduler.schedule_task(nxt, _run)
+                    entry["task_id"] = tid
+                    entry["next_run"] = nxt
+                    changed = True
+                    restored += 1
+                except Exception as e:
+                    logger.warning(f"Failed restoring automation '{name}': {e}")
+            if changed:
+                dm.update_guild_data(guild.id, "automations", autos)
+        if restored:
+            logger.info(f"Restored {restored} LIVE cron automation(s)")
 
     async def _handle_passive_systems(self, message):
         """Handle systems that react to messages passively."""

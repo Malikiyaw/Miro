@@ -279,8 +279,9 @@ class ActionHandler:
         "post_documentation", "setup_trigger_role",
         # Personalized Memory actions
         "update_user_preference",
-        # Automation action
-        "create_automation"
+        # Automation actions — LIVE
+        "create_automation", "delete_automation", "list_automations",
+        "delete_prefix_command", "list_prefix_commands"
     }
 
     @classmethod
@@ -1691,23 +1692,73 @@ class ActionHandler:
 
 
     async def action_create_prefix_command(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
-        """Adds a custom '!' command to the guild structure."""
+        """Adds a custom '!' command that executes LIVE via bot.on_message fast-path."""
         guild_id = interaction.guild.id
-        cmd_name = params.get("name")
-        cmd_code = params.get("code")
+        # Normalize aliases: agent may send name/code under various keys
+        cmd_name = self._get_param(params, "name", "cmd_name", "command", "trigger", default=None)
+        cmd_code = self._get_param(params, "code", "content", "response", "message", "text", default=None)
+        # Fallback to raw dict keys for legacy shapes
+        if not cmd_name:
+            cmd_name = params.get("name") or params.get("cmd_name") or params.get("command")
+        if cmd_code is None:
+            cmd_code = params.get("code") if "code" in params else params.get("content")
+        if not cmd_name or cmd_code is None or str(cmd_name).strip() == "" or str(cmd_code).strip() == "":
+            return False, {"error": "create_prefix_command requires 'name' and 'code' (or 'content')."}
+        raw_name = str(cmd_name).strip()
+        norm_name = raw_name.lstrip("!#").strip().lower()
+        if not norm_name:
+            return False, {"error": "Invalid command name."}
+        # Prevent overwriting protected system commands without explicit intent — still allow but log
+        if len(norm_name) > 32:
+            return False, {"error": "Command name too long (max 32 chars)."}
+        # Normalize code to JSON string the router understands
+        # If code is already a dict with command_type, keep it; if string JSON, validate; else wrap as simple
+        stored = None
+        existing = None
+        try:
+            if isinstance(cmd_code, dict):
+                # Already structured
+                if "command_type" not in cmd_code:
+                    cmd_code = {"command_type": "simple", "content": str(cmd_code.get("content") or cmd_code.get("response") or json.dumps(cmd_code))}
+                stored = json.dumps(cmd_code)
+            elif isinstance(cmd_code, str):
+                stripped = cmd_code.strip()
+                if stripped.startswith("{"):
+                    try:
+                        parsed = json.loads(stripped)
+                        if isinstance(parsed, dict) and "command_type" in parsed:
+                            stored = json.dumps(parsed)
+                        else:
+                            stored = json.dumps({"command_type": "simple", "content": cmd_code})
+                    except Exception:
+                        stored = json.dumps({"command_type": "simple", "content": cmd_code})
+                else:
+                    stored = json.dumps({"command_type": "simple", "content": cmd_code})
+            else:
+                stored = json.dumps({"command_type": "simple", "content": str(cmd_code)})
+        except Exception:
+            stored = json.dumps({"command_type": "simple", "content": str(cmd_code)})
 
         cmds = dm.get_guild_data(guild_id, "custom_commands", {})
-        existing = cmds.get(cmd_name)
-        cmds[cmd_name] = cmd_code
+        existing = cmds.get(norm_name)
+        cmds[norm_name] = stored
+        # Keep original-case alias if different for display purposes
+        if raw_name.lower() != norm_name and raw_name.lstrip("!#").strip():
+            pass
         dm.update_guild_data(guild_id, "custom_commands", cmds)
 
         # Log to analytics
         usage = dm.get_guild_data(guild_id, "command_usage", {})
-        if cmd_name not in usage:
-            usage[cmd_name] = {"count": 0, "last_used": 0, "created_at": time.time()}
+        if norm_name not in usage:
+            usage[norm_name] = {"count": 0, "last_used": 0, "created_at": time.time()}
             dm.update_guild_data(guild_id, "command_usage", usage)
 
-        return True, {"action": "delete_prefix_command", "cmd_name": cmd_name, "previous_code": existing}
+        # Also track in unified automations registry for agent discoverability
+        autos = dm.get_guild_data(guild_id, "automations", {})
+        autos[norm_name] = {"type": "prefix_command", "name": norm_name, "code": stored, "created_by": getattr(interaction.user, "id", 0), "created_at": time.time()}
+        dm.update_guild_data(guild_id, "automations", autos)
+
+        return True, {"action": "delete_prefix_command", "cmd_name": norm_name, "previous_code": existing, "automation_id": norm_name, "message": f"Prefix command !{norm_name} is LIVE — send !{norm_name} to trigger it."}
 
     async def action_create_command(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
         """Alias for action_create_prefix_command."""
@@ -2418,96 +2469,385 @@ class ActionHandler:
     async def action_create_economy_system(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
         return await self.action_setup_economy(interaction, params)
 
+    def _get_automations_dict(self, guild_id: int) -> dict:
+        try:
+            return dm.get_guild_data(guild_id, "automations", {}) or {}
+        except Exception:
+            return {}
+
+    def _save_automations_dict(self, guild_id: int, data: dict):
+        try:
+            dm.update_guild_data(guild_id, "automations", data)
+        except Exception as e:
+            logger.error(f"Failed to save automations for {guild_id}: {e}")
+
+    def _normalize_scheduled_params(self, handler_name: str, handler_params: Any,
+                                    channel_id=None, response: str = "") -> dict:
+        """Prepare stored/dispatch params for a scheduled automation:
+        - inject channel_id so the fire-time interaction targets the right channel
+        - map flat 'response' onto the handler's text parameter (content/message/...)"""
+        if not isinstance(handler_params, dict):
+            handler_params = {}
+        hp = dict(handler_params)
+        if channel_id is not None and "channel_id" not in hp and "channel" not in hp:
+            hp["channel_id"] = channel_id
+        if response and not any(k in hp for k in ("content", "message", "text", "description")):
+            hp["content"] = response
+        return hp
+
+    def _schedule_cron_job(self, guild_id: int, name: str, cron: str, handler_name: str, handler_params: dict, channel_id=None):
+        """Validate cron, compute next_run, schedule via TaskScheduler with rescheduling. Returns (task_id, next_run) or (None, error)."""
+        try:
+            from croniter import croniter
+        except Exception as e:
+            return None, f"croniter not available: {e}"
+        try:
+            nxt = croniter(cron, datetime.now()).get_next(float)
+        except Exception as e:
+            return None, f"Invalid cron expression '{cron}': {e}"
+        try:
+            from task_scheduler import task_scheduler
+        except Exception as e:
+            return None, f"task_scheduler not available: {e}"
+        # Normalize handler
+        if not isinstance(handler_params, dict):
+            handler_params = {}
+        # Inject channel_id into params if provided and not already there
+        if channel_id is not None and "channel_id" not in handler_params and "channel" not in handler_params:
+            handler_params = dict(handler_params)
+            handler_params["channel_id"] = channel_id
+
+        # Closure that executes then reschedules
+        async def _run_and_reschedule(_name=name, _cron=cron, _handler=handler_name, _params=dict(handler_params), _gid=guild_id):
+            try:
+                mock = ScheduledTaskInteraction(self.bot, _gid)
+                if mock.guild is None:
+                    logger.warning(f"Scheduled task '{_name}': guild {_gid} not found; dropping")
+                    return
+                cid = (_params or {}).get("channel_id")
+                if cid:
+                    try:
+                        ch = self.bot.get_channel(int(str(cid)))
+                        if ch is not None:
+                            mock.channel = ch
+                    except (TypeError, ValueError):
+                        pass
+                # Merge live params copy
+                await self.dispatch(mock, _handler, dict(_params))
+                # Schedule next occurrence
+                try:
+                    from croniter import croniter as _ci
+                    nxt2 = _ci(_cron, datetime.now()).get_next(float)
+                    task_scheduler.schedule_task(nxt2, _run_and_reschedule)
+                    # Update automations next_run for observability
+                    try:
+                        autos = dm.get_guild_data(_gid, "automations", {}) or {}
+                        if _name in autos:
+                            autos[_name]["next_run"] = nxt2
+                            dm.update_guild_data(_gid, "automations", autos)
+                    except Exception:
+                        pass
+                except Exception as e2:
+                    logger.error(f"Failed to reschedule '{_name}': {e2}")
+            except Exception as e:
+                logger.error(f"Scheduled task '{_name}' failed: {e}")
+
+        try:
+            task_id = task_scheduler.schedule_task(nxt, _run_and_reschedule)
+        except Exception as e:
+            return None, f"Failed to schedule task: {e}"
+        return task_id, nxt
+
     async def action_schedule_ai_action(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
-        """Schedule an AI action to run on a cron schedule."""
-        from task_scheduler import TaskScheduler
-
-        name = params.get("name", f"scheduled_{int(time.time())}")
-        cron = params.get("cron", "0 12 * * *")
-        action_type = params.get("action_type", "announcement")
-        action_params = params.get("action_params", {})
+        """Schedule an AI action to run on a cron schedule. LIVE via TaskScheduler."""
+        name = str(params.get("name") or f"scheduled_{int(time.time())}").strip()[:64]
+        cron = str(params.get("cron") or "0 12 * * *").strip()
+        action_type = str(params.get("action_type") or params.get("handler") or "send_message").strip()
+        action_params = params.get("action_params") if isinstance(params.get("action_params"), dict) else params.get("handler_params") if isinstance(params.get("handler_params"), dict) else {}
+        if not isinstance(action_params, dict):
+            action_params = {}
+        # Also support trigger style params
         channel_id = params.get("channel_id")
-
+        if channel_id is None:
+            trig = params.get("trigger")
+            if isinstance(trig, dict):
+                channel_id = trig.get("channel_id")
         guild_id = interaction.guild.id
-
-        scheduler = getattr(self.bot, 'scheduler', None)
-        if scheduler and hasattr(scheduler, 'add_ai_task'):
-            scheduler.add_ai_task(name, guild_id, cron, action_type, action_params, channel_id)
-            logger.info(f"Scheduled AI action: {name} for guild {guild_id}")
-            return True, {"action": "remove_ai_task", "name": name}
-        else:
-            logger.error("Scheduler not available")
-            return False, None
+        # Map legacy action_type names to real handlers
+        handler_map = {"announcement": "send_message", "announce": "send_message"}
+        handler_name = handler_map.get(action_type.lower(), action_type)
+        action_params = self._normalize_scheduled_params(handler_name, action_params, channel_id)
+        task_id, nxt_or_err = self._schedule_cron_job(guild_id, name, cron, handler_name, action_params)
+        if task_id is None:
+            return False, {"error": nxt_or_err}
+        # Persist in automations registry for restore + delete
+        autos = self._get_automations_dict(guild_id)
+        autos[name] = {"type": "scheduled_task", "name": name, "cron": cron, "handler": handler_name, "params": action_params, "channel_id": channel_id, "next_run": nxt_or_err, "task_id": task_id, "created_by": getattr(interaction.user, "id", 0), "created_at": time.time()}
+        self._save_automations_dict(guild_id, autos)
+        logger.info(f"Scheduled AI action LIVE: {name} cron:{cron} next:{nxt_or_err} guild:{guild_id}")
+        return True, {"automation_id": name, "type": "scheduled_task", "cron": cron, "next_run": nxt_or_err, "task_id": task_id, "handler": handler_name}
 
     async def action_create_automation(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
-        """Create an automation - schedule a task or set up an auto-responder."""
-        from task_scheduler import TaskScheduler
-
-        name = params.get("name", f"automation_{int(time.time())}")
-        automation_type = params.get("type", "scheduled_task")
+        """Create a LIVE automation — scheduled_task / auto_responder / reminder."""
+        name = str(params.get("name") or f"automation_{int(time.time())}").strip()[:64]
+        # Normalize type: accept "type", "automation_type", "kind"
+        automation_type = str(params.get("type") or params.get("automation_type") or params.get("kind") or "scheduled_task").strip().lower()
+        # Aliases
+        if automation_type in ("schedule", "cron", "scheduled", "task"):
+            automation_type = "scheduled_task"
+        elif automation_type in ("responder", "auto-responder", "autoresponder"):
+            automation_type = "auto_responder"
         schedule = params.get("schedule", {})
         trigger = params.get("trigger", {})
         action_to_perform = params.get("action", {})
-        response = params.get("response", "")
-
+        # Support alternative keys: "action_type"+"action_params" flat
+        if not action_to_perform and (params.get("action_type") or params.get("handler")):
+            action_to_perform = {"name": params.get("action_type") or params.get("handler"), "parameters": params.get("action_params") or params.get("handler_params") or {}}
+        response = params.get("response", params.get("content", params.get("message", "")))
+        if response is None:
+            response = ""
+        response = str(response)
         guild_id = interaction.guild.id
-
         try:
             if automation_type == "scheduled_task":
-                # Ensure schedule and trigger are dictionaries
                 if not isinstance(schedule, dict):
-                    logger.warning(f"Schedule is not a dict: {type(schedule)}. Using empty dict.")
                     schedule = {}
                 if not isinstance(trigger, dict):
-                    logger.warning(f"Trigger is not a dict: {type(trigger)}. Using empty dict.")
                     trigger = {}
-                # Ensure action_to_perform is a dictionary
                 if not isinstance(action_to_perform, dict):
-                    logger.warning(f"Action to perform is not a dict: {type(action_to_perform)}. Using empty dict.")
                     action_to_perform = {}
-                
-                cron = schedule.get("cron", "0 12 * * *")
-                channel_id = trigger.get("channel_id")
-                scheduler = getattr(self.bot, 'scheduler', None)
-                if scheduler and hasattr(scheduler, 'add_ai_task'):
-                    scheduler.add_ai_task(name, guild_id, cron, action_to_perform.get("name", "send_message"), action_to_perform.get("parameters", {}), channel_id)
-                    logger.info(f"Created scheduled automation: {name} for guild {guild_id}")
-                    return True, {"automation_id": name, "type": automation_type, "schedule": schedule}
+                cron = str(schedule.get("cron") or params.get("cron") or "0 12 * * *").strip()
+                channel_id = trigger.get("channel_id") if isinstance(trigger, dict) else None
+                if channel_id is None:
+                    channel_id = params.get("channel_id")
+                # handler extraction: support {name, parameters} or {handler, params}
+                handler_name = action_to_perform.get("name") or action_to_perform.get("handler") or params.get("action_type") or "send_message"
+                handler_params = action_to_perform.get("parameters") or action_to_perform.get("params") or action_to_perform.get("handler_params") or {}
+                if not isinstance(handler_params, dict):
+                    handler_params = {}
+                handler_name = str(handler_name).strip()
+                handler_params = self._normalize_scheduled_params(handler_name, handler_params, channel_id, response)
+                task_id, nxt_or_err = self._schedule_cron_job(guild_id, name, cron, handler_name, handler_params)
+                if task_id is None:
+                    return False, {"error": nxt_or_err}
+                autos = self._get_automations_dict(guild_id)
+                autos[name] = {"type": "scheduled_task", "name": name, "cron": cron, "handler": handler_name, "params": handler_params, "channel_id": channel_id, "next_run": nxt_or_err, "task_id": task_id, "created_by": getattr(interaction.user, "id", 0), "created_at": time.time(), "schedule": schedule, "trigger": trigger}
+                self._save_automations_dict(guild_id, autos)
+                logger.info(f"Created LIVE scheduled automation: {name} cron:{cron} guild:{guild_id}")
+                return True, {"automation_id": name, "type": automation_type, "cron": cron, "next_run": nxt_or_err, "task_id": task_id, "handler": handler_name}
             elif automation_type == "auto_responder":
-                # Ensure trigger is a dictionary
                 if not isinstance(trigger, dict):
-                    logger.warning(f"Trigger is not a dict: {type(trigger)}. Using empty dict.")
                     trigger = {}
-                triggers = trigger.get("keywords", [])
-                dm.update_guild_data(guild_id, f"auto_responder_{name}", {
-                    "keywords": triggers,
-                    "response": response,
-                    "enabled": True
-                })
-                logger.info(f"Created auto-responder automation: {name} for guild {guild_id}")
-                return True, {"automation_id": name, "type": automation_type, "triggers": triggers}
+                # Accept keywords as list or single string or trigger string
+                raw_keywords = trigger.get("keywords") if "keywords" in trigger else trigger.get("keyword") if "keyword" in trigger else trigger.get("trigger") if "trigger" in trigger else params.get("keywords")
+                if raw_keywords is None:
+                    # Also try flat trigger param
+                    raw_keywords = trigger if isinstance(trigger, list) else []
+                if isinstance(raw_keywords, str):
+                    # split by comma if contains commas
+                    if "," in raw_keywords:
+                        raw_keywords = [k.strip() for k in raw_keywords.split(",") if k.strip()]
+                    else:
+                        raw_keywords = [raw_keywords.strip()] if raw_keywords.strip() else []
+                if not isinstance(raw_keywords, list):
+                    raw_keywords = [str(raw_keywords)] if raw_keywords else []
+                triggers = [str(k).strip().lower() for k in raw_keywords if str(k).strip()]
+                if not triggers:
+                    # Fallback: use name as trigger if none provided
+                    triggers = [name.lower()]
+                if not response or not response.strip():
+                    return False, {"error": "auto_responder requires 'response' text."}
+                # Route through real system
+                ar = getattr(self.bot, "auto_responder", None)
+                if ar is None:
+                    return False, {"error": "AutoResponderSystem not available on bot."}
+                # Determine match/response types from trigger dict if provided
+                match_type = trigger.get("match_type", trigger.get("match", "contains"))
+                response_type = trigger.get("response_type", "text")
+                # Ensure valid enums
+                if match_type not in ("exact", "contains", "starts_with", "ends_with", "regex"):
+                    match_type = "contains"
+                if response_type not in ("text", "embed", "random", "reaction"):
+                    response_type = "text"
+                created = []
+                for kw in triggers:
+                    responder = {"trigger": kw, "response": response, "match_type": match_type, "response_type": response_type, "enabled": True, "_automation_name": name}
+                    try:
+                        ar.add_responder(guild_id, responder)
+                        created.append(kw)
+                    except Exception as e:
+                        logger.error(f"Failed to add responder for {kw}: {e}")
+                if not created:
+                    return False, {"error": "Failed to create any auto-responder."}
+                # Persist registry for delete
+                autos = self._get_automations_dict(guild_id)
+                autos[name] = {"type": "auto_responder", "name": name, "triggers": created, "response": response, "match_type": match_type, "response_type": response_type, "created_by": getattr(interaction.user, "id", 0), "created_at": time.time(), "trigger": trigger}
+                self._save_automations_dict(guild_id, autos)
+                logger.info(f"Created LIVE auto-responder automation: {name} triggers:{created} guild:{guild_id}")
+                return True, {"automation_id": name, "type": automation_type, "triggers": created, "match_type": match_type, "response_type": response_type}
             elif automation_type == "reminder":
-                # Ensure schedule and trigger are dictionaries
                 if not isinstance(schedule, dict):
-                    logger.warning(f"Schedule is not a dict: {type(schedule)}. Using empty dict.")
                     schedule = {}
                 if not isinstance(trigger, dict):
-                    logger.warning(f"Trigger is not a dict: {type(trigger)}. Using empty dict.")
                     trigger = {}
-                duration = schedule.get("duration", 3600)
-                dm.update_guild_data(guild_id, f"reminder_{name}", {
-                    "duration": duration,
-                    "content": response,
-                    "original_message": trigger.get("message_id"),
-                    "target_user": trigger.get("user_id")
-                })
-                logger.info(f"Created reminder automation: {name} for guild {guild_id}")
-                return True, {"automation_id": name, "type": automation_type, "duration": duration}
+                # duration may be under schedule.duration / delay_seconds / seconds / or flat duration param
+                duration = schedule.get("duration")
+                if duration is None:
+                    duration = schedule.get("delay_seconds")
+                if duration is None:
+                    duration = schedule.get("seconds")
+                if duration is None:
+                    duration = params.get("duration")
+                if duration is None:
+                    duration = 3600
+                try:
+                    duration = int(duration)
+                except Exception:
+                    return False, {"error": f"Invalid duration: {duration}"}
+                if duration < 10:
+                    duration = 10
+                if duration > 2592000:
+                    return False, {"error": "Duration must be 10s .. 30 days."}
+                if not response or not response.strip():
+                    return False, {"error": "reminder requires 'response' or 'content' text."}
+                # Build proper reminder_data for ReminderSystem
+                channel_id = trigger.get("channel_id") or params.get("channel_id") or getattr(interaction.channel, "id", None)
+                user_id = trigger.get("user_id") or getattr(interaction.user, "id", 0)
+                reminder_time = time.time() + duration
+                reminder_id = int(time.time() * 1000) % 2147483647
+                reminder_data = {"id": reminder_id, "user_id": user_id, "guild_id": guild_id, "channel_id": channel_id, "message": response, "reminder_time": reminder_time, "recurring": bool(schedule.get("recurring", False)), "recurring_interval": duration if schedule.get("recurring") else None, "created_at": time.time(), "_automation_name": name}
+                # Persist via same key as ReminderSystem expects
+                reminders = dm.get_guild_data(guild_id, "scheduled_reminders", [])
+                if not isinstance(reminders, list):
+                    reminders = []
+                reminders.append(reminder_data)
+                dm.update_guild_data(guild_id, "scheduled_reminders", reminders)
+                # Schedule via task_scheduler
+                try:
+                    from task_scheduler import task_scheduler as _ts
+                    # Use ReminderSystem.send_reminder if available else inline send
+                    rs = getattr(self.bot, "reminders", None)
+                    if rs and hasattr(rs, "send_reminder"):
+                        task_id = _ts.schedule_task(reminder_time, rs.send_reminder, reminder_data)
+                    else:
+                        async def _send_reminder_inline(data=reminder_data):
+                            try:
+                                ch = self.bot.get_channel(data["channel_id"])
+                                if not ch:
+                                    return
+                                import discord as _d
+                                emb = _d.Embed(title="⏰ Reminder!", description=data["message"], color=_d.Color.blue())
+                                await ch.send(f"<@{data['user_id']}>", embed=emb)
+                            except Exception as e:
+                                logger.error(f"Inline reminder failed: {e}")
+                        task_id = _ts.schedule_task(reminder_time, _send_reminder_inline)
+                    # Track in active_reminders memory
+                    try:
+                        if rs and hasattr(rs, "active_reminders"):
+                            if user_id not in rs.active_reminders:
+                                rs.active_reminders[user_id] = []
+                            rs.active_reminders[user_id].append(reminder_data)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.error(f"Failed to schedule reminder task: {e}")
+                    task_id = None
+                # Registry
+                autos = self._get_automations_dict(guild_id)
+                autos[name] = {"type": "reminder", "name": name, "duration": duration, "reminder_id": reminder_id, "reminder_time": reminder_time, "channel_id": channel_id, "task_id": task_id, "created_by": getattr(interaction.user, "id", 0), "created_at": time.time(), "schedule": schedule, "trigger": trigger, "response": response}
+                self._save_automations_dict(guild_id, autos)
+                logger.info(f"Created LIVE reminder automation: {name} duration:{duration}s guild:{guild_id}")
+                return True, {"automation_id": name, "type": automation_type, "duration": duration, "reminder_id": reminder_id, "reminder_time": reminder_time, "task_id": task_id, "channel_id": channel_id}
             else:
-                return False, {"error": f"Unknown automation type: {automation_type}"}
+                return False, {"error": f"Unknown automation type: {automation_type}. Use scheduled_task, auto_responder, or reminder."}
         except Exception as e:
             logger.error(f"Error creating automation: {e}")
+            import traceback as _tb
+            logger.error(_tb.format_exc())
             return False, {"error": str(e)}
+
+    async def action_delete_automation(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        """Delete an automation by name and cancel its scheduled job."""
+        name = str(params.get("name") or params.get("automation_id") or params.get("automation_name") or "").strip()
+        if not name:
+            return False, {"error": "delete_automation requires 'name'."}
+        guild_id = interaction.guild.id
+        autos = self._get_automations_dict(guild_id)
+        entry = autos.get(name)
+        if not entry:
+            # Also try prefix_command registry under same name
+            return False, {"error": f"Automation '{name}' not found."}
+        atype = entry.get("type", "scheduled_task")
+        task_id = entry.get("task_id")
+        # Cancel scheduled task if present
+        if task_id is not None:
+            try:
+                from task_scheduler import task_scheduler as _ts
+                _ts.cancel_task(task_id)
+            except Exception:
+                pass
+        # Type-specific cleanup
+        try:
+            if atype == "auto_responder":
+                ar = getattr(self.bot, "auto_responder", None)
+                if ar and hasattr(ar, "get_responders"):
+                    triggers = entry.get("triggers") or []
+                    responders = ar.get_responders(guild_id) or []
+                    # Remove responders that were created by this automation (_automation_name)
+                    keep = [r for r in responders if r.get("_automation_name") != name and r.get("trigger") not in triggers or r.get("_automation_name") != name]
+                    # More precise: drop any with matching _automation_name
+                    keep = [r for r in responders if r.get("_automation_name") != name]
+                    # If none matched but triggers exist, drop by trigger value
+                    if len(keep) == len(responders) and triggers:
+                        keep = [r for r in responders if r.get("trigger") not in triggers]
+                    if len(keep) != len(responders):
+                        dm.update_guild_data(guild_id, "auto_responders", keep)
+            elif atype == "reminder":
+                rid = entry.get("reminder_id")
+                # Remove from scheduled_reminders
+                rems = dm.get_guild_data(guild_id, "scheduled_reminders", []) or []
+                new_rems = [r for r in rems if r.get("id") != rid and r.get("_automation_name") != name]
+                if len(new_rems) != len(rems):
+                    dm.update_guild_data(guild_id, "scheduled_reminders", new_rems)
+                # Remove from active_reminders memory
+                try:
+                    rs = getattr(self.bot, "reminders", None)
+                    if rs and hasattr(rs, "active_reminders"):
+                        uid = entry.get("created_by") or entry.get("user_id")
+                        for uid_key in list(rs.active_reminders.keys()):
+                            rs.active_reminders[uid_key] = [r for r in rs.active_reminders[uid_key] if r.get("id") != rid and r.get("_automation_name") != name]
+                except Exception:
+                    pass
+            elif atype == "prefix_command":
+                # Remove prefix command entry as well
+                cmds = dm.get_guild_data(guild_id, "custom_commands", {}) or {}
+                if name in cmds:
+                    del cmds[name]
+                    dm.update_guild_data(guild_id, "custom_commands", cmds)
+                    # Clean usage
+                    usage = dm.get_guild_data(guild_id, "command_usage", {}) or {}
+                    if name in usage:
+                        del usage[name]
+                        dm.update_guild_data(guild_id, "command_usage", usage)
+        except Exception as e:
+            logger.warning(f"Cleanup for automation {name} ({atype}) had issue: {e}")
+        # Remove from automations registry
+        del autos[name]
+        self._save_automations_dict(guild_id, autos)
+        logger.info(f"Deleted automation LIVE: {name} type:{atype} guild:{guild_id}")
+        return True, {"automation_id": name, "type": atype, "message": f"Deleted automation '{name}'."}
+
+    async def action_list_automations(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        """List all automations for this guild."""
+        guild_id = interaction.guild.id
+        autos = self._get_automations_dict(guild_id)
+        # Also merge legacy custom_commands count for observability
+        return True, {"automations": autos, "count": len(autos)}
+
+    async def action_list_prefix_commands(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        guild_id = interaction.guild.id
+        cmds = dm.get_guild_data(guild_id, "custom_commands", {}) or {}
+        return True, {"commands": list(cmds.keys()), "count": len(cmds), "details": {k: (v[:120] + "..." if len(str(v))>120 else v) for k,v in cmds.items()}}
 
     async def action_connect_systems(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
         """Connect two systems so that when trigger_event happens in source_system, action is performed on target_system."""
@@ -2942,15 +3282,51 @@ class ActionHandler:
             return False, None
 
     async def action_delete_prefix_command(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
-        cmd_name = params.get("cmd_name")
+        # Accept multiple alias keys for robustness
+        raw = params.get("cmd_name") or params.get("name") or params.get("command") or params.get("command_name")
+        if not raw or not str(raw).strip():
+            return False, {"error": "Missing cmd_name (or name)."}
+        cmd_name = str(raw).strip().lstrip("!#").lower()
         if not cmd_name:
-            return False, {"error": "Missing cmd_name"}
+            return False, {"error": "Invalid command name."}
         guild_id = interaction.guild.id
-        commands = dm.get_guild_data(guild_id, "custom_commands", {})
+        commands = dm.get_guild_data(guild_id, "custom_commands", {}) or {}
+        # Also handle legacy case where key stored with raw case
+        found_key = None
         if cmd_name in commands:
-            del commands[cmd_name]
+            found_key = cmd_name
+        else:
+            # case-insensitive search
+            for k in list(commands.keys()):
+                if k.lower().lstrip("!#") == cmd_name:
+                    found_key = k
+                    break
+        if found_key is not None:
+            del commands[found_key]
             dm.update_guild_data(guild_id, "custom_commands", commands)
-            return True, {"message": f"Deleted command !{cmd_name}"}
+            # Also clean usage
+            try:
+                usage = dm.get_guild_data(guild_id, "command_usage", {}) or {}
+                if found_key in usage:
+                    del usage[found_key]
+                    dm.update_guild_data(guild_id, "command_usage", usage)
+                if cmd_name in usage:
+                    del usage[cmd_name]
+                    dm.update_guild_data(guild_id, "command_usage", usage)
+            except Exception:
+                pass
+            # Clean automations registry entry if present
+            try:
+                autos = self._get_automations_dict(guild_id)
+                if cmd_name in autos:
+                    del autos[cmd_name]
+                    self._save_automations_dict(guild_id, autos)
+                if found_key in autos and found_key != cmd_name:
+                    del autos[found_key]
+                    self._save_automations_dict(guild_id, autos)
+            except Exception:
+                pass
+            return True, {"message": f"Deleted command !{found_key}", "cmd_name": found_key}
         return False, {"error": f"Command !{cmd_name} not found"}
 
     async def action_unpin_message(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
@@ -4692,6 +5068,33 @@ class ActionHandler:
     _custom_cmd_cooldowns = {}  # class-level: (guild_id, user_id, cmd_name) -> timestamp
     _custom_cmd_cooldown_seconds = 3
 
+    def _render_template(self, text: str, message: discord.Message, args_str: str = "") -> str:
+        """Substitute live placeholders in custom command / automation text.
+        Supported: {user} {user.mention} {user.id} {server} {server.id}
+                   {channel} {channel.name} {args}"""
+        if not isinstance(text, str):
+            return text
+        author = getattr(message, "author", None)
+        guild = getattr(message, "guild", None)
+        channel = getattr(message, "channel", None)
+        channel_disp = getattr(channel, "mention", None) or (
+            f"#{getattr(channel, 'name', '')}" if channel is not None else "")
+        replacements = {
+            "{user}": getattr(author, "display_name", "") or "",
+            "{user.mention}": getattr(author, "mention", "") or "",
+            "{user.id}": str(getattr(author, "id", "")),
+            "{server}": getattr(guild, "name", "") if guild else "",
+            "{server.id}": str(getattr(guild, "id", "")) if guild else "",
+            "{channel}": channel_disp,
+            "{channel.name}": getattr(channel, "name", "") or "",
+            "{args}": args_str or "",
+        }
+        out = text
+        for key, val in replacements.items():
+            if key in out:
+                out = out.replace(key, val)
+        return out
+
     async def execute_custom_command(self, message: discord.Message, code: str, cmd_name: str = None):
         """
         Executes a custom '!' command's stored code.
@@ -4806,7 +5209,8 @@ class ActionHandler:
 
                 if command_type == "simple":
                     content = data.get("content", "")
-                    await message.channel.send(content.replace("{args}", args_str) if args_str else content)
+                    content = self._render_template(content, message, args_str)
+                    await message.channel.send(content)
                     return True
 
                 if command_type == "application_status":
@@ -9981,6 +10385,7 @@ class ActionHandler:
                 data = code
 
             content = data.get("content", "✅ Command executed.")
+            content = self._render_template(content, message)
             await message.channel.send(content)
             return True
         except Exception as e:
