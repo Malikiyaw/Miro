@@ -279,3 +279,6 @@ Traceback (most recent call last):
   File "/workspace/cad48349-765c-4c08-becd-f0aeb983a551/sessions/agent_161b71b2-fb0d-4197-be02-e6a6e5f37e38/./core/action_meta.py", line 257, in system_protected_channel_ids
     for cid in (guild.system_channel_id, guild.rules_channel_id):
 AttributeError: 'G' object has no attribute 'system_channel_id'
+2026-08-24 10:50:34,904 - MiroBot - DEBUG - debug:84 - server context injection failed: 'method' object is not iterable
+2026-08-24 10:50:34,905 - MiroBot - DEBUG - debug:84 - server context injection failed: 'method' object is not iterable
+2026-08-24 10:50:35,029 - MiroBot - WARNING - warning:92 - Unknown action: inspect_channel
