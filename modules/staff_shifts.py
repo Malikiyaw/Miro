@@ -3,6 +3,5 @@ from modules.staff_management import (  # noqa: F401
     StaffShiftSystem,
     _SlashChannelShim,
     _SlashMessageShim,
-    staff_shifts_extension_setup as setup,
     staff_shifts_extension_setup,
 )

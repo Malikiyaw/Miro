@@ -6,5 +6,4 @@ from modules.communications import (  # noqa: F401
     ModmailThreadView,
     NoteModal,
     modmail_extension_setup,
-    modmail_extension_setup as setup,
 )

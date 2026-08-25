@@ -8,5 +8,4 @@ from modules.security import (  # noqa: F401
     DenyModal,
     RequestInfoModal,
     appeals_extension_setup,
-    appeals_extension_setup as setup,
 )
