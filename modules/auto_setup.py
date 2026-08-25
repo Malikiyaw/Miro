@@ -66,37 +66,280 @@ class SystemCategory:
                 return category
         return None
 
+
+# One-click curated bundles: preset name -> systems to install
+SETUP_PRESETS = {
+    "gaming": {
+        "label": "🎮 Gaming Community",
+        "systems": ["verification", "welcome_leave", "leveling", "economy", "shop",
+                    "gamification", "tournaments", "giveaways", "starboard"],
+    },
+    "support": {
+        "label": "💼 Support Server",
+        "systems": ["verification", "tickets", "modmail", "announcements", "reminders",
+                    "automod", "warnings", "moderation", "logging", "applications",
+                    "staff_shifts"],
+    },
+    "community": {
+        "label": "👥 Small Community",
+        "systems": ["verification", "welcome_leave", "suggestions", "giveaways",
+                    "auto_responder", "reaction_roles", "reminders", "announcements"],
+    },
+    "everything": {
+        "label": "🏢 Everything",
+        "systems": [s for cat in SystemCategory.get_all_categories() for s in cat["systems"]],
+    },
+}
+
+
+class PreflightReport:
+    """Result of pre-installation checks."""
+
+    def __init__(self):
+        self.ok = True
+        self.lines = []
+
+    def add(self, passed: bool, text: str):
+        self.lines.append(("✅" if passed else "❌") + " " + text)
+        if not passed:
+            self.ok = False
+
+
+class SetupProgress:
+    """Single live embed showing per-system install status. No channel spam."""
+
+    ICONS = {"pending": "⏳", "running": "🔧", "ok": "✅", "warn": "⚠️", "fail": "❌"}
+
+    def __init__(self, interaction, systems: List[str], resume_from: int = 0):
+        self.interaction = interaction
+        self.systems = list(systems)
+        self.status = {s: ("ok" if i < resume_from else "pending") for i, s in enumerate(systems)}
+        self.started = time.time()
+        self.message = None
+
+    def _bar(self) -> str:
+        done = sum(1 for v in self.status.values() if v in ("ok", "warn", "fail"))
+        total = max(len(self.systems), 1)
+        filled = int(20 * done / total)
+        return "█" * filled + "░" * (20 - filled) + f" {done}/{total}"
+
+    def build_embed(self) -> discord.Embed:
+        lines = [f"{self.ICONS[self.status[s]]} {s.replace('_', ' ').title()}" for s in self.systems]
+        elapsed = max(1, int(time.time() - self.started))
+        embed = discord.Embed(
+            title="⚙️ Installing Systems…",
+            description="`" + self._bar() + "`",
+            color=discord.Color.orange(),
+        )
+        half = (len(lines) + 1) // 2
+        embed.add_field(name="Progress", value="\n".join(lines[:half]) or "—", inline=True)
+        if lines[half:]:
+            embed.add_field(name="‎", value="\n".join(lines[half:]), inline=True)
+        embed.set_footer(text=f"Elapsed: {elapsed}s · installing safely with rate limiting")
+        return embed
+
+    async def start(self):
+        # Prefer editing the original response (works whether or not the
+        # interaction was already responded to); fall back to response edit.
+        try:
+            self.message = await self.interaction.original_response()
+        except Exception:
+            self.message = None
+        if self.message is not None:
+            try:
+                await self.message.edit(embed=self.build_embed(), view=None)
+                return
+            except Exception:
+                self.message = None
+        try:
+            await self.interaction.response.edit_message(embed=self.build_embed(), view=None)
+            self.message = await self.interaction.original_response()
+        except Exception:
+            pass
+
+    async def set_status(self, system: str, status: str):
+        self.status[system] = status
+        if self.message is not None:
+            try:
+                await self.message.edit(embed=self.build_embed())
+            except Exception:
+                pass
+
+    async def finish(self, embed: discord.Embed, view=None):
+        if self.message is not None:
+            try:
+                await self.message.edit(embed=embed, view=view)
+                return
+            except Exception:
+                pass
+        try:
+            await self.interaction.edit_original_response(embed=embed, view=view)
+        except Exception:
+            pass
+
+
+async def safe_edit(interaction, **kwargs):
+    """Edit the wizard message regardless of interaction state."""
+    try:
+        if interaction.response.is_done():
+            await interaction.edit_original_response(**kwargs)
+        else:
+            await interaction.response.edit_message(**kwargs)
+        return
+    except Exception:
+        pass
+    try:
+        msg = await interaction.original_response()
+        await msg.edit(**kwargs)
+    except Exception:
+        pass
+
+
 class AutoSetupSystem:
     """
     Complete auto-setup system that installs and configures all bot systems.
     Features:
-    - Interactive system selection
-    - Automatic channel/role creation
-    - System configuration
-    - Progress tracking
+    - Interactive system selection + one-click curated presets
+    - Automatic channel/role creation (fully recorded for undo)
+    - Pre-flight permission checks
+    - Single live-progress embed (no channel spam)
     - Resume interrupted setups
     """
 
     def __init__(self, bot):
         self.bot = bot
 
+    # ------------------------------------------------------------------ #
+    # Manifest (undo support)                                            #
+    # ------------------------------------------------------------------ #
+
+    def _manifest(self, guild_id: int) -> dict:
+        manifests = dm.load_json("setup_manifests", default={})
+        return manifests.get(str(guild_id), {})
+
+    def _record(self, guild_id: int, system: str, kind: str, object_id: int):
+        """Record a created channel/role in the setup manifest for undo."""
+        try:
+            manifests = dm.load_json("setup_manifests", default={})
+            entry = manifests.setdefault(str(guild_id), {"systems": {}, "created_at": time.time()})
+            sys_entry = entry["systems"].setdefault(system, {"channels": [], "roles": []})
+            bucket = sys_entry.setdefault(kind + "s", [])
+            if object_id not in bucket:
+                bucket.append(object_id)
+            dm.save_json("setup_manifests", manifests)
+        except Exception as e:
+            logger.warning(f"Manifest record failed: {e}")
+
+    async def undo_setup(self, guild) -> Tuple[int, int]:
+        """Delete only the channels/roles Miro created during setup.
+        Returns (channels_removed, roles_removed)."""
+        manifest = self._manifest(guild.id)
+        removed_ch = removed_r = 0
+        for _system, entry in manifest.get("systems", {}).items():
+            for cid in entry.get("channels", []):
+                ch = guild.get_channel(int(cid)) if str(cid).isdigit() else None
+                if ch is not None:
+                    try:
+                        await ch.delete(reason="Miro auto-setup: undo")
+                        removed_ch += 1
+                    except Exception as e:
+                        logger.warning(f"Undo: could not delete channel {cid}: {e}")
+            for rid in entry.get("roles", []):
+                role = guild.get_role(int(rid)) if str(rid).isdigit() else None
+                if role is not None:
+                    try:
+                        await role.delete(reason="Miro auto-setup: undo")
+                        removed_r += 1
+                    except Exception as e:
+                        logger.warning(f"Undo: could not delete role {rid}: {e}")
+        manifests = dm.load_json("setup_manifests", default={})
+        manifests.pop(str(guild.id), None)
+        dm.save_json("setup_manifests", manifests)
+        completed = dm.load_json("completed_setups", default={})
+        completed.pop(str(guild.id), None)
+        dm.save_json("completed_setups", completed)
+        return removed_ch, removed_r
+
+    # ------------------------------------------------------------------ #
+    # Pre-flight checks                                                  #
+    # ------------------------------------------------------------------ #
+
+    def run_preflight(self, guild) -> PreflightReport:
+        report = PreflightReport()
+        me = guild.me
+        perms = me.guild_permissions if me else None
+        report.add(bool(perms and perms.administrator), "Bot has Administrator permission")
+        report.add(bool(perms and perms.manage_channels), "Bot can manage channels")
+        report.add(bool(perms and perms.manage_roles), "Bot can manage roles")
+        top = me.top_role if me else None
+        others = [r for r in guild.roles if not r.is_default() and r != top]
+        report.add(bool(top and all(top.position > r.position for r in others)),
+                   f"Bot's highest role is near the top (position: {top.position if top else '?'})")
+        return report
+
+    # ------------------------------------------------------------------ #
+    # Wizard entry                                                       #
+    # ------------------------------------------------------------------ #
+
     async def start_setup(self, interaction):
         """Start the auto-setup process."""
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("❌ Only administrators can use auto-setup.", ephemeral=True)
 
-        # Check if setup already completed
-        completed = dm.load_json("completed_setups", default={})
-        if str(interaction.guild.id) in completed:
-            return await interaction.response.send_message("✅ This server has already been set up!", ephemeral=True)
+        gid = str(interaction.guild.id)
 
+        # Resume check: an interrupted setup exists?
+        pending = dm.load_json("pending_setups", default={}).get(gid)
+        completed = dm.load_json("completed_setups", default={}).get(gid)
+
+        if pending and isinstance(pending.get("selected_systems"), list):
+            done = pending.get("completed", [])
+            remaining = [s for s in pending["selected_systems"] if s not in done]
+            embed = discord.Embed(
+                title="⏸️ Interrupted Setup Found",
+                description=(
+                    f"A previous setup was interrupted **{int(time.time() - pending.get('started_at', time.time()))}s ago**.\n\n"
+                    f"**Completed:** {len(done)} system(s)\n"
+                    f"**Remaining:** {len(remaining)} system(s)"
+                    + ("\n".join(f"• {s}" for s in remaining[:10]) if remaining else "")
+                ),
+                color=discord.Color.gold(),
+            )
+            await interaction.response.send_message(
+                embed=embed, view=ResumeSetupView(self, interaction.guild.id, remaining),
+                ephemeral=True)
+            return
+
+        if completed:
+            manifest = self._manifest(interaction.guild.id)
+            n_created = sum(len(v.get("channels", []) + v.get("roles", []))
+                            for v in manifest.get("systems", {}).values())
+            embed = discord.Embed(
+                title="✅ This server has already been set up!",
+                description=(
+                    f"Installed by <@{completed.get('installed_by', '?')}>"
+                    f" at <t:{int(completed.get('completed_at', 0))}:f>.\n"
+                    f"Systems installed: **{len(completed.get('systems_installed', []))}**\n\n"
+                    "You can re-run parts of it anytime, or undo everything below."
+                ),
+                color=discord.Color.green(),
+            )
+            view = AlreadySetupView(self) if n_created else None
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            return
+
+        # Fresh run: show pre-flight report up front
+        report = self.run_preflight(interaction.guild)
         embed = discord.Embed(
             title="🤖 Miro Bot Auto-Setup",
-            description="Welcome to the automated setup wizard! This will configure all bot systems for your server.\n\n**What will be created:**\n• Roles and channels for each system\n• Default configurations\n• Permission settings\n\n⚠️ This process may take several minutes.",
-            color=discord.Color.blue()
+            description="Welcome to the automated setup wizard!\n\n"
+                        "**What will be created:**\n"
+                        "• Roles and channels for each system\n"
+                        "• Default configurations · fully undoable afterwards\n\n"
+                        "**Pre-flight checks:**\n" + "\n".join(report.lines),
+            color=discord.Color.green() if report.ok else discord.Color.red(),
         )
-
-        view = SetupStartView(self)
+        view = SetupStartView(self, preflight_ok=report.ok)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     async def begin_system_selection(self, interaction):
@@ -164,80 +407,112 @@ class AutoSetupSystem:
         return descriptions.get(system, "System functionality")
 
     async def start_installation(self, interaction, selected_systems):
-        """Begin system installation."""
-        embed = discord.Embed(
-            title="⚙️ Installing Systems...",
-            description=f"Setting up {len(selected_systems)} systems. This may take a few minutes.\n\n**Installing:** {', '.join(selected_systems[:5])}{'...' if len(selected_systems) > 5 else ''}",
-            color=discord.Color.orange()
-        )
+        """Begin system installation (live progress embed, no channel spam)."""
+        gid = str(interaction.guild.id)
 
-        await interaction.response.edit_message(embed=embed, view=None)
+        # Resume support: skip already-completed systems
+        pending = dm.load_json("pending_setups", default={}).get(gid) or {}
+        done_before = [s for s in pending.get("completed", []) if s in selected_systems]
+        resume_from = len(done_before)
+        to_install = [s for s in selected_systems if s not in done_before]
 
-        # Create setup tracking
-        setup_data = ServerSetup(
-            guild_id=interaction.guild.id,
-            state=SetupState.STARTED,
-            started_at=time.time(),
-            completed_at=None,
-            steps_completed=[],
-            config={},
-            selected_systems=selected_systems
-        )
+        # Pre-flight gate
+        report = self.run_preflight(interaction.guild)
+        if not report.ok:
+            embed = discord.Embed(
+                title="❌ Pre-flight Checks Failed",
+                description="Cannot install safely:\n" + "\n".join(report.lines),
+                color=discord.Color.red(),
+            )
+            await safe_edit(interaction, embed=embed, view=None)
+            return
 
-        # Save setup state
+        progress = SetupProgress(interaction, selected_systems, resume_from=resume_from)
+        await progress.start()
+
+        # Persist pending state (with completed steps for resume)
         pending_setups = dm.load_json("pending_setups", default={})
-        pending_setups[str(interaction.guild.id)] = {
+        pending_setups[gid] = {
             "user_id": interaction.user.id,
-            "selected_systems": selected_systems,
+            "selected_systems": list(selected_systems),
+            "completed": list(done_before),
             "started_at": time.time(),
             "channel_id": interaction.channel.id,
-            "actions_taken": []
         }
         dm.save_json("pending_setups", pending_setups)
 
-        # Install systems
-        success = await self.install_systems(interaction.guild, selected_systems, interaction.user, interaction.channel)
+        results = await self.install_systems(interaction.guild, to_install,
+                                             interaction.user, interaction.channel,
+                                             progress=progress)
 
-        if success:
-            # Mark as completed
+        # Update pending bookkeeping
+        pending_setups = dm.load_json("pending_setups", default={})
+        ok_systems = done_before + [s for s, ok in results.items() if ok]
+        failed_systems = [s for s, ok in results.items() if not ok]
+
+        if not failed_systems:
             completed_setups = dm.load_json("completed_setups", default={})
-            completed_setups[str(interaction.guild.id)] = {
+            completed_setups[gid] = {
                 "completed_at": time.time(),
-                "systems_installed": selected_systems,
-                "installed_by": interaction.user.id
+                "systems_installed": sorted(set(ok_systems)),
+                "installed_by": interaction.user.id,
             }
             dm.save_json("completed_setups", completed_setups)
+            pending_setups.pop(gid, None)
+            dm.save_json("pending_setups", pending_setups)
 
-            # Clean up pending
-            if str(interaction.guild.id) in pending_setups:
-                del pending_setups[str(interaction.guild.id)]
-                dm.save_json("pending_setups", pending_setups)
+        await self._send_final_report(progress, interaction, ok_systems, failed_systems)
 
-            embed = discord.Embed(
-                title="✅ Setup Complete!",
-                description=f"Successfully installed {len(selected_systems)} systems!\n\n**Next steps:**\n• Use `/configpanel` to customize settings\n• Check the created channels\n• Test the systems with sample commands",
-                color=discord.Color.green()
-            )
-        else:
-            embed = discord.Embed(
-                title="❌ Setup Failed",
-                description="Some systems may not have installed correctly. Please check the logs and try again.",
-                color=discord.Color.red()
-            )
+    async def _send_final_report(self, progress, interaction, ok_systems, failed_systems):
+        """Post-install verification: diagnostics + configpanel jump buttons."""
+        from modules.system_panels import SYSTEM_GROUPS, open_system_panel
 
+        diag_lines = []
+        groups_installed = []
+        for group_key, spec in SYSTEM_GROUPS.items():
+            group_sys = {sub["key"] for sub in spec["subsystems"]}
+            hits = [s for s in ok_systems if s in group_sys or
+                    (s == "welcome_leave" and "verification" in group_sys)]
+            if hits:
+                groups_installed.append(group_key)
         try:
-            await interaction.edit_original_response(embed=embed)
-        except:
-            pass
+            from data_manager import dm as _dm
+            import discord as _d
+            for gk in groups_installed[:4]:
+                spec = SYSTEM_GROUPS[gk]
+                checks_ok = 0
+                checks_total = 0
+                for sub in spec["subsystems"]:
+                    cfg = _dm.get_guild_data(interaction.guild.id, sub["config_key"], {})
+                    enabled = bool(cfg.get("enabled")) if isinstance(cfg, dict) else False
+                    checks_total += 1
+                    checks_ok += (1 if (enabled or not sub.get("supports_toggle", True)) else 0)
+                icon = "✅" if checks_ok == checks_total else "⚠️"
+                diag_lines.append(f"{icon} **{spec['name']}** — {checks_ok}/{checks_total} active")
+        except Exception as e:
+            logger.warning(f"Post-install diagnostics failed: {e}")
+            diag_lines.append(f"⚠️ Diagnostics unavailable: {str(e)[:80]}")
 
-    async def install_systems(self, guild, systems, user, channel) -> bool:
-        """Install all selected systems."""
-        success_count = 0
+        desc = f"Successfully installed **{len(ok_systems)}** system(s).\n"
+        if failed_systems:
+            desc += f"⚠️ Issues: {', '.join(failed_systems[:8])}\n"
+        desc += "\n**Live verification:**\n" + "\n".join(diag_lines)
+        embed = discord.Embed(
+            title="✅ Setup Complete!" if not failed_systems else "⚠️ Setup Finished (partial)",
+            description=desc,
+            color=discord.Color.green() if not failed_systems else discord.Color.gold(),
+        )
+        view = SetupDoneView(groups_installed)
+        await progress.finish(embed, view)
 
+    async def install_systems(self, guild, systems, user, channel, progress=None) -> dict:
+        """Install all selected systems. Returns {system_name: success_bool}."""
+        results = {}
         for system in systems:
-            try:
-                await channel.send(f"🔧 Installing {system.replace('_', ' ').title()}...")
+            if progress is not None:
+                await progress.set_status(system, "running")
 
+            try:
                 if system == "verification":
                     success = await self.setup_verification(guild, user)
                 elif system == "economy":
@@ -249,22 +524,30 @@ class AutoSetupSystem:
                 elif system == "welcome_leave":
                     success = await self.setup_welcome(guild, user)
                 else:
-                    # Generic setup for other systems
                     success = await self.setup_generic_system(guild, system, user)
 
-                if success:
-                    success_count += 1
-                    await channel.send(f"✅ {system.replace('_', ' ').title()} installed!")
-                else:
-                    await channel.send(f"⚠️ {system.replace('_', ' ').title()} had issues during setup.")
+                results[system] = bool(success)
+                if progress is not None:
+                    await progress.set_status(system, "ok" if success else "warn")
+                # persist resume state after each step
+                try:
+                    pends = dm.load_json("pending_setups", default={})
+                    entry = pends.get(str(guild.id))
+                    if entry is not None and success:
+                        entry.setdefault("completed", []).append(system)
+                        dm.save_json("pending_setups", pends)
+                except Exception:
+                    pass
 
-                await asyncio.sleep(1)  # Rate limiting
+                await asyncio.sleep(0.5)  # rate limiting
 
             except Exception as e:
                 logger.error(f"Failed to install {system}: {e}")
-                await channel.send(f"❌ Failed to install {system.replace('_', ' ').title()}")
+                results[system] = False
+                if progress is not None:
+                    await progress.set_status(system, "fail")
 
-        return success_count > 0
+        return results
 
     async def setup_verification(self, guild, user) -> bool:
         """Set up verification system."""
@@ -272,9 +555,12 @@ class AutoSetupSystem:
             # Create roles
             verified_role = await guild.create_role(name="Verified", color=discord.Color.green())
             unverified_role = await guild.create_role(name="Unverified", color=discord.Color.red())
+            self._record(guild.id, "verification", "role", verified_role.id)
+            self._record(guild.id, "verification", "role", unverified_role.id)
 
             # Create channel
             verify_channel = await guild.create_text_channel("verify")
+            self._record(guild.id, "verification", "channel", verify_channel.id)
 
             # Set permissions
             await verify_channel.set_permissions(guild.default_role, read_messages=False)
@@ -301,6 +587,7 @@ class AutoSetupSystem:
         try:
             # Create channels
             shop_channel = await guild.create_text_channel("shop")
+            self._record(guild.id, "economy", "channel", shop_channel.id)
 
             # Configure system
             config = {
@@ -329,6 +616,7 @@ class AutoSetupSystem:
         try:
             # Create leaderboard channel
             lb_channel = await guild.create_text_channel("leaderboard")
+            self._record(guild.id, "leveling", "channel", lb_channel.id)
 
             # Configure system
             config = {
@@ -352,9 +640,12 @@ class AutoSetupSystem:
             # Create category and channels
             ticket_category = await guild.create_category("Support Tickets")
             ticket_queue = await guild.create_text_channel("ticket-queue", category=ticket_category)
+            self._record(guild.id, "tickets", "channel", ticket_category.id)
+            self._record(guild.id, "tickets", "channel", ticket_queue.id)
 
             # Create staff role
             staff_role = await guild.create_role(name="Support Staff", color=discord.Color.blue())
+            self._record(guild.id, "tickets", "role", staff_role.id)
 
             # Configure system
             config = {
@@ -376,6 +667,7 @@ class AutoSetupSystem:
         try:
             # Create welcome channel
             welcome_channel = await guild.create_text_channel("welcome")
+            self._record(guild.id, "welcome_leave", "channel", welcome_channel.id)
 
             # Configure system
             config = {
@@ -474,15 +766,14 @@ class AutoSetupSystem:
             ch = await self._get_or_create_channel(guild, name)
             if ch:
                 channels[name] = str(ch.id)
+                self._record(guild.id, system, "channel", ch.id)
         roles = {}
         for role_name in spec.get("roles", []):
             role = discord.utils.get(guild.roles, name=role_name)
             if role is None:
                 try:
-                    color = discord.Color.blue()
-                    if role_name == "Staff":
-                        color = discord.Color.blue()
-                    role = await guild.create_role(name=role_name, color=color)
+                    role = await guild.create_role(name=role_name, color=discord.Color.blue())
+                    self._record(guild.id, system, "role", role.id)
                 except Exception as e:
                     logger.warning(f"Could not create role '{role_name}': {e}")
             if role:
@@ -576,6 +867,7 @@ class AutoSetup(AutoSetupSystem):
             channel = await self._create_setup_channel(guild, "applications")
             if not channel:
                 return False
+            self._record(guild.id, "applications", "channel", channel.id)
             config = {
                 "enabled": True,
                 "channel_id": channel.id,
@@ -608,6 +900,7 @@ class AutoSetup(AutoSetupSystem):
             channel = await self._create_setup_channel(guild, "appeals")
             if not channel:
                 return False
+            self._record(guild.id, "appeals", "channel", channel.id)
             config = {
                 "appeals_channel_id": channel.id,
                 "log_channel_id": channel.id,
@@ -639,9 +932,12 @@ class AutoSetup(AutoSetupSystem):
             channel = await self._create_setup_channel(guild, "mod-log")
             if not channel:
                 return False
+            self._record(guild.id, "moderation", "channel", channel.id)
+            self._record(guild.id, "moderation", "channel", channel.id)
             role = None
             try:
                 role = await guild.create_role(name="Moderator", color=discord.Color.orange())
+                self._record(guild.id, "moderation", "role", role.id)
             except Exception as e:
                 logger.error(f"Failed to create Moderator role: {e}")
             config = {
@@ -663,6 +959,8 @@ class AutoSetup(AutoSetupSystem):
             channel = await self._create_setup_channel(guild, "logs")
             if not channel:
                 return False
+            self._record(guild.id, "logging", "channel", channel.id)
+            self._record(guild.id, "logging", "channel", channel.id)
             dm.update_guild_data(guild.id, "logging_config", {"enabled": True, "log_channel": str(channel.id)})
             return True
         except Exception as e:
@@ -671,20 +969,174 @@ class AutoSetup(AutoSetupSystem):
 
 # UI Classes
 class SetupStartView(discord.ui.View):
-    def __init__(self, auto_setup):
+    def __init__(self, auto_setup, preflight_ok: bool = True):
         super().__init__(timeout=300)
         self.auto_setup = auto_setup
+        self.preflight_ok = preflight_ok
+        # rows 0-1: curated presets, row 2: custom flows
+        for i, key in enumerate(("gaming", "support")):
+            self.add_item(PresetButton(auto_setup, key, SETUP_PRESETS[key], row=0))
+        for i, key in enumerate(("community", "everything")):
+            self.add_item(PresetButton(auto_setup, key, SETUP_PRESETS[key], row=1))
 
-    @discord.ui.button(label="Start Setup", style=discord.ButtonStyle.success, emoji="🚀")
+    @discord.ui.button(label="Custom Selection…", style=discord.ButtonStyle.primary, emoji="🎯", row=2)
     async def start_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.auto_setup.begin_system_selection(interaction)
 
-    @discord.ui.button(label="Quick Setup (Recommended)", style=discord.ButtonStyle.primary, emoji="⚡")
+    @discord.ui.button(label="Quick Setup (Recommended)", style=discord.ButtonStyle.success, emoji="⚡", row=2)
     async def quick_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.preflight_ok:
+            report = self.auto_setup.run_preflight(interaction.guild)
+            if not report.ok:
+                return await interaction.response.send_message(
+                    "❌ Pre-flight checks failed:\n" + "\n".join(report.lines),
+                    ephemeral=True)
         recommended = ["verification", "welcome_leave", "tickets", "economy", "leveling",
                        "automod", "warnings", "moderation", "anti_raid", "auto_responder",
                        "announcements", "reminders"]
         await self.auto_setup.start_installation(interaction, recommended)
+
+
+class PresetButton(discord.ui.Button):
+    """One-click curated system bundle with confirmation."""
+
+    PRESET_COLORS = {
+        "gaming": discord.ButtonStyle.success,
+        "support": discord.ButtonStyle.primary,
+        "community": discord.ButtonStyle.secondary,
+        "everything": discord.ButtonStyle.danger,
+    }
+
+    def __init__(self, auto_setup, key: str, spec: dict, row: int = 0):
+        super().__init__(
+            label=f"{spec['label']} ({len(spec['systems'])})",
+            style=self.PRESET_COLORS.get(key, discord.ButtonStyle.secondary),
+            row=row,
+        )
+        self.auto_setup = auto_setup
+        self.key = key
+        self.spec = spec
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.spec["systems"]:
+            return await interaction.response.send_message("❌ Empty preset.", ephemeral=True)
+        from ui.components import ConfirmView
+        view = ConfirmView(
+            interaction.user.id,
+            f"Install **{self.spec['label']}** — {len(self.spec['systems'])} systems?\n"
+            f"Channels/roles will be created (fully undoable afterwards).",
+            timeout=30)
+        await interaction.response.send_message(
+            f"Confirm installation of **{self.spec['label']}**?", view=view, ephemeral=True)
+        await view.wait()
+        if not view.confirmed:
+            try:
+                await interaction.followup.send("❎ Installation cancelled.", ephemeral=True)
+            except Exception:
+                pass
+            return
+        await self.auto_setup.start_installation(interaction, list(self.spec["systems"]))
+
+
+class ResumeSetupView(discord.ui.View):
+    """Shown when an interrupted setup is detected."""
+
+    def __init__(self, auto_setup, guild_id: int, remaining: List[str]):
+        super().__init__(timeout=180)
+        self.auto_setup = auto_setup
+        self.guild_id = guild_id
+        self.remaining = remaining
+
+    @discord.ui.button(label="Resume Setup", style=discord.ButtonStyle.success, emoji="▶️")
+    async def resume(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.remaining:
+            pending_setups = dm.load_json("pending_setups", default={})
+            pending_setups.pop(str(self.guild_id), None)
+            dm.save_json("pending_setups", pending_setups)
+            return await interaction.response.edit_message(
+                content="✅ Nothing left to install — previous setup already finished.",
+                embed=None, view=None)
+        await self.auto_setup.start_installation(interaction, list(self.remaining))
+
+    @discord.ui.button(label="Start Fresh", style=discord.ButtonStyle.secondary, emoji="🔄")
+    async def fresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pending_setups = dm.load_json("pending_setups", default={})
+        pending_setups.pop(str(self.guild_id), None)
+        dm.save_json("pending_setups", pending_setups)
+        await self.auto_setup.begin_system_selection(interaction)
+
+    @discord.ui.button(label="Discard", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def discard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pending_setups = dm.load_json("pending_setups", default={})
+        pending_setups.pop(str(self.guild_id), None)
+        dm.save_json("pending_setups", pending_setups)
+        await interaction.response.edit_message(
+            content="🗑️ Interrupted setup discarded.", embed=None, view=None)
+
+
+class AlreadySetupView(discord.ui.View):
+    """Shown on /autosetup when the server was already set up."""
+
+    def __init__(self, auto_setup):
+        super().__init__(timeout=120)
+        self.auto_setup = auto_setup
+
+    @discord.ui.button(label="Undo Entire Setup", style=discord.ButtonStyle.danger, emoji="↩️")
+    async def undo(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from ui.components import ConfirmView
+        confirm = ConfirmView(
+            interaction.user.id,
+            "Delete every channel and role Miro created during auto-setup?\n"
+            "**This cannot be undone.** System configurations are kept.",
+            danger=True, timeout=30)
+        await interaction.response.send_message("Confirm undo:", view=confirm, ephemeral=True)
+        await confirm.wait()
+        if not confirm.confirmed:
+            return
+        try:
+            await interaction.followup.send("↩️ Undoing setup…", ephemeral=True)
+            ch, r = await self.auto_setup.undo_setup(interaction.guild)
+            await interaction.followup.send(
+                f"✅ Removed {ch} channel(s) and {r} role(s) created by auto-setup.",
+                ephemeral=True)
+        except Exception as e:
+            logger.error(f"Undo failed: {e}")
+            try:
+                await interaction.followup.send(f"❌ Undo failed: {str(e)[:150]}", ephemeral=True)
+            except Exception:
+                pass
+
+
+class SetupDoneView(discord.ui.View):
+    """Completion screen: jump into config panels or undo."""
+
+    def __init__(self, group_keys: List[str]):
+        super().__init__(timeout=600)
+        options = []
+        for gk in group_keys[:25]:
+            try:
+                from modules.system_panels import SYSTEM_GROUPS
+                spec = SYSTEM_GROUPS.get(gk, {})
+                options.append(discord.SelectOption(
+                    label=f"{spec.get('name', gk)}",
+                    value=gk,
+                    emoji=spec.get("emoji"),
+                    description="Open its configuration panel",
+                ))
+            except Exception:
+                continue
+        if options:
+            self.add_item(ConfigureSelect(options))
+
+
+class ConfigureSelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(placeholder="⚙️ Configure an installed system group…", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        from modules.system_panels import open_system_panel
+        await open_system_panel(interaction, self.values[0])
+
 
 class CategorySelectView(discord.ui.View):
     def __init__(self, auto_setup, guild_id: int):

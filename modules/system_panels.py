@@ -1,5 +1,8 @@
+import re
+
 import discord
 from discord import ui
+import time
 from typing import Callable, Dict, List, Optional
 
 from data_manager import dm
@@ -248,12 +251,14 @@ SYSTEM_GROUPS: Dict[str, dict] = {
              "accessors": _module_accessors("anti_raid", "anti_raid_config",
                                             "get_guild_settings", "save_settings"),
              "settings": [
-                 {"key": "mass_join_threshold", "label": "Join threshold (accounts)", "type": "int"},
-                 {"key": "mass_join_window", "label": "Time window (seconds)", "type": "int"},
-                 {"key": "min_account_age_days", "label": "Min account age (days)", "type": "int"},
-                 {"key": "action", "label": "Action (lockdown/kick/ban/mute)", "type": "str"},
-                 {"key": "alert_channel_id", "label": "Alert channel", "type": "channel"},
-             ],
+                  {"key": "mass_join_threshold", "label": "Join threshold (accounts)", "type": "int", "min": 3, "max": 100},
+                  {"key": "mass_join_window", "label": "Time window (seconds)", "type": "int", "min": 10, "max": 600},
+                  {"key": "min_account_age_days", "label": "Min account age (days)", "type": "int", "min": 0, "max": 30},
+                  {"key": "alert_channel_id", "label": "Alert channel", "type": "channel"},
+              ],
+              "selects": [{"key": "action", "label": "Raid response action",
+                           "options": [("lockdown", "🔒 Lockdown"), ("kick", "👢 Kick"),
+                                       ("ban", "🔨 Ban"), ("mute", "🔇 Mute")]}],
              "toggles": [{"key": "auto_lockdown", "label": "Auto lockdown"},
                          {"key": "age_filter_enabled", "label": "Account-age filter"}],
              "metrics": [_metric_count("Logged incidents", "raid_log")],
@@ -474,7 +479,7 @@ def get_group(group_key: str) -> Optional[dict]:
 class GroupPanelView(SystemPanelView):
     """One consistent control panel for every merged system group."""
 
-    TABS = ["overview", "test", "help", "danger"]
+    TABS = ["overview", "test", "help", "history", "danger"]
 
     def __init__(self, bot, interaction: discord.Interaction, group_key: str):
         spec = SYSTEM_GROUPS[group_key]
@@ -517,6 +522,7 @@ class GroupPanelView(SystemPanelView):
         for s in self.spec["subsystems"]:
             nav.add_option(label=f"{s['label']} settings", value=f"sub:{s['key']}")
         nav.add_option(label="🧪 Test", value="test", description="Run live diagnostics")
+        nav.add_option(label="🕘 Recent changes", value="history", description="Audit trail for this system")
         nav.add_option(label="❓ Help", value="help", description="What these settings do")
         nav.add_option(label="☠️ Danger zone", value="danger", description="Reset configurations")
         nav.callback = self._nav_select
@@ -607,6 +613,22 @@ class GroupPanelView(SystemPanelView):
         if sub.get("rule_toggles"):
             self._build_rule_toggles(sub, row)
 
+        for sel in sub.get("selects", []):
+            if row > 4:
+                break
+            cfg = self._read(sub)
+            current = str(cfg.get(sel["key"], ""))
+            select = ui.Select(
+                placeholder=f"{sel['label']}"
+                            f"{' (now: ' + current + ')' if current else ''}",
+                custom_id=f"miro:sel:{sel['key']}", row=row)
+            for value, label in sel["options"]:
+                select.add_option(label=label, value=value,
+                                  default=(value == current))
+            select.callback = self._make_select_callback(sub, sel)
+            self.add_item(select)
+            row += 1
+
         if sub.get("lockdown"):
             self._build_lockdown_buttons(sub)
 
@@ -655,6 +677,19 @@ class GroupPanelView(SystemPanelView):
                 interaction, f"automod:rule:{rule_key}", work,
                 success=f"{label} rule {'🟢 enabled' if new_state else '⚪ disabled'}",
                 refresh=True)
+        return callback
+
+    def _make_select_callback(self, sub: dict, sel: dict):
+        async def callback(interaction: discord.Interaction):
+            value = interaction.data["values"][0]
+            async def work():
+                cfg = self._read(sub)
+                cfg[sel["key"]] = value
+                self._write(sub, cfg)
+                return value
+            await self.perform(
+                interaction, f"{sub['key']}:sel:{sel['key']}", work,
+                success=f"✅ {sel['label']} set to **{value}**.", refresh=True)
         return callback
 
     def _build_lockdown_buttons(self, sub: dict):
@@ -740,24 +775,50 @@ class GroupPanelView(SystemPanelView):
         return work
 
     def _build_danger_actions(self):
+        backups = self._get_backups()
+        row = 1
         for idx, sub in enumerate(self.spec["subsystems"]):
-            row = min(1 + idx, 4)
             btn = ui.Button(label=f"Reset {sub['label']}", emoji="♻️",
                             style=discord.ButtonStyle.danger,
-                            custom_id=f"miro:reset:{sub['key']}", row=row)
+                            custom_id=f"miro:reset:{sub['key']}", row=min(row, 4))
             btn.callback = self._make_reset_callback(sub)
             self.add_item(btn)
+            if sub["config_key"] in backups and row <= 4:
+                restore = ui.Button(label=f"Restore {sub['label']}", emoji="⏪",
+                                    style=discord.ButtonStyle.success,
+                                    custom_id=f"miro:restore:{sub['key']}",
+                                    row=min(row, 4), disabled=False)
+                restore.callback = self._make_restore_callback(sub)
+                self.add_item(restore)
+            row += 1
+
+    # -- config backup store --------------------------------------------------
+
+    def _get_backups(self) -> dict:
+        return dm.get_guild_data(self.guild.id, "config_backups", {}) or {}
+
+    def _save_backup(self, sub: dict, cfg: dict):
+        try:
+            backups = self._get_backups()
+            backups[sub["config_key"]] = {"data": cfg, "at": time.time()}
+            dm.update_guild_data(self.guild.id, "config_backups", backups)
+        except Exception as e:
+            logger.warning(f"Config backup failed: {e}")
 
     def _make_reset_callback(self, sub: dict):
         async def callback(interaction: discord.Interaction):
             confirm_view = ConfirmView(self.author_id,
-                                       f"Reset **{sub['label']}** to defaults? Its configuration will be erased.",
+                                       f"Reset **{sub['label']}** to defaults? Its configuration will be erased.\n"
+                                       f"(A backup is kept — you can Restore it from this tab.)",
                                        danger=True)
             await interaction.response.send_message(
                 f"♻️ Reset **{sub['label']}**? This erases its configuration for this server.",
                 view=confirm_view, ephemeral=True)
 
             async def work():
+                current = dm.get_guild_data(self.guild.id, sub["config_key"], {})
+                if isinstance(current, dict) and current:
+                    self._save_backup(sub, current)
                 dm.delete_guild_data(self.guild.id, sub["config_key"])
                 return "deleted"
 
@@ -765,7 +826,7 @@ class GroupPanelView(SystemPanelView):
                 await confirm_view.wait()
                 if confirm_view.confirmed:
                     await self.perform(interaction, f"{sub['key']}:reset", work,
-                                       success=f"♻️ {sub['label']} configuration reset to module defaults.")
+                                       success=f"♻️ {sub['label']} configuration reset (backup saved).")
                 else:
                     try:
                         await interaction.followup.send("❎ Reset cancelled.", ephemeral=True)
@@ -774,6 +835,29 @@ class GroupPanelView(SystemPanelView):
 
             import asyncio as _aio
             _aio.create_task(wait_and_run())
+        return callback
+
+    def _make_restore_callback(self, sub: dict):
+        async def callback(interaction: discord.Interaction):
+            backup = self._get_backups().get(sub["config_key"])
+            if not backup or not isinstance(backup.get("data"), dict):
+                return await interaction.response.send_message(
+                    "❌ No backup found for this system.", ephemeral=True)
+
+            async def work():
+                self._write(sub, backup["data"])
+                # remove the consumed backup
+                backups = self._get_backups()
+                backups.pop(sub["config_key"], None)
+                dm.update_guild_data(self.guild.id, "config_backups", backups)
+                return "restored"
+
+            when = backup.get("at")
+            when_txt = f"<t:{int(when)}:R>" if isinstance(when, (int, float)) else "earlier"
+            await self.perform(
+                interaction, f"{sub['key']}:restore", work,
+                success=f"⏪ {sub['label']} configuration restored (backup from {when_txt}).",
+                refresh=True)
         return callback
 
     def _build_test_actions(self):
@@ -800,9 +884,69 @@ class GroupPanelView(SystemPanelView):
             return self._build_status_embed(title)
         if self.tab == "test":
             return self._build_test_embed(title)
+        if self.tab == "history":
+            return self._build_history_embed(title)
         if self.tab == "help":
             return self._build_help_embed(title)
         return self._build_danger_embed(title)
+
+    def _build_history_embed(self, title: str) -> discord.Embed:
+        """Recent audit entries touching this system group."""
+        entries = []
+        audit_log = getattr(self.bot, "audit_log", None)
+        if audit_log is not None:
+            try:
+                recent = audit_log.get_recent(limit=200, guild_id=self.guild.id)
+            except TypeError:
+                try:
+                    recent = audit_log.get_recent(limit=200)
+                except Exception:
+                    recent = []
+            except Exception:
+                recent = []
+            group_words = {w for w in re.split(r"[_:]", self.group_key) if len(w) > 3}
+            sub_keys = {sub["key"] for sub in self.spec["subsystems"]}
+            for e in recent:
+                text = str(e.get("action", "") or "")
+                blob = (text + " " + str(e.get("target", "") or "")).lower()
+                if any(k.replace("_", "") in blob.replace("_", "") or k in blob
+                       for k in sub_keys | group_words):
+                    entries.append(e)
+                if len(entries) >= 8:
+                    break
+        if not entries:
+            return build_status_embed(
+                f"{title} — Recent changes", self.guild,
+                fields=[("Audit trail",
+                         "No recorded changes for this system yet.\n"
+                         "Every panel change is written to the audit log automatically.", False)])
+        lines = []
+        for e in entries:
+            ts = e.get("timestamp")
+            when = f"<t:{int(ts)}:R>" if isinstance(ts, (int, float)) and ts else "recently"
+            actor = f"<@{e['actor_id']}>" if e.get("actor_id") else "unknown"
+            lines.append(f"• `{e.get('action', '?')}` by {actor} · {when}")
+        return build_status_embed(f"{title} — Recent changes", self.guild,
+                                  fields=[("Audit trail (latest 8)",
+                                           "\n".join(lines)[:4000], False)])
+
+    def _runtime_status(self, sub: dict) -> str:
+        """Real runtime liveness: is this subsystem's module loaded & running?"""
+        module = getattr(self.bot, sub.get("module_attr", ""), None)
+        if module is None:
+            return "🔴 module not loaded"
+        # monitor-style modules expose a start method and keep a task/loop flag
+        for flag in ("_task", "_monitor_task", "_running", "_loop"):
+            t = getattr(module, flag, None)
+            if t is not None:
+                if hasattr(t, "is_running"):
+                    return "🟢 running" if t.is_running() else "🟠 stopped"
+                if isinstance(t, bool):
+                    return "🟢 active" if t else "🟠 inactive"
+        if hasattr(module, "start_monitoring") or hasattr(module, "start_tasks") \
+                or hasattr(module, "start_loops") or hasattr(module, "start_event_monitor"):
+            return "🟢 loaded (event-driven)"
+        return "🟢 loaded"
 
     def _build_status_embed(self, title: str) -> discord.Embed:
         fields = []
@@ -812,7 +956,10 @@ class GroupPanelView(SystemPanelView):
                 status = format_bool(bool(cfg.get("enabled"))) if sub.get("supports_toggle", True) else "⚙️ Active"
                 metrics = " · ".join(f"{label}: **{mf(self.bot, self.guild.id)[1]}**"
                                      for label, mf in sub.get("metrics", []))
-                fields.append((f"{sub['label']}", f"{status}" + (f"\n{metrics}" if metrics else ""), False))
+                value = f"{status} · {self._runtime_status(sub)}"
+                if metrics:
+                    value += f"\n{metrics}"
+                fields.append((f"{sub['label']}", value, False))
             return build_status_embed(title, self.guild, fields=fields,
                                       footer="Pick a subsystem above to configure it · every button performs real changes")
         sub = self._sub()
@@ -864,9 +1011,17 @@ class GroupPanelView(SystemPanelView):
     def _build_danger_embed(self, title: str) -> discord.Embed:
         lines = [f"♻️ **Reset {s['label']}** — erases `{s['config_key']}` for this server."
                  for s in self.spec["subsystems"]]
+        backups = self._get_backups()
+        backup_keys = [s["config_key"] for s in self.spec["subsystems"] if s["config_key"] in backups]
+        extra = ""
+        if backup_keys:
+            extra = ("\n\n⏪ **Backups available** for: " +
+                     ", ".join(f"`{k}`" for k in backup_keys) +
+                     " — use the Restore buttons below.")
         return build_status_embed(f"{title} — Danger zone", self.guild, status=False,
                                   fields=[("Destructive operations",
-                                           "\n".join(lines) + "\n\nEach reset asks for confirmation first.",
+                                           "\n".join(lines) +
+                                           "\n\nEach reset asks for confirmation and keeps a restorable backup." + extra,
                                            False)])
 
 
@@ -904,7 +1059,13 @@ def make_settings_modal(panel: GroupPanelView, sub: dict, cfg: dict):
                             raise ValueError(f"{setting['label']}: enter a channel ID or name")
                         new_cfg[key] = digits
                     elif setting["type"] == "int":
-                        new_cfg[key] = int(float(raw)) if raw else 0
+                        val = int(float(raw)) if raw else 0
+                        lo, hi = setting.get("min"), setting.get("max")
+                        if lo is not None and val < lo:
+                            raise ValueError(f"{setting['label']}: minimum is {lo}")
+                        if hi is not None and val > hi:
+                            raise ValueError(f"{setting['label']}: maximum is {hi}")
+                        new_cfg[key] = val
                     elif setting["type"] == "float":
                         new_cfg[key] = float(raw) if raw else 0.0
                     else:
@@ -930,11 +1091,15 @@ def make_settings_modal(panel: GroupPanelView, sub: dict, cfg: dict):
 
 async def run_diagnostics(bot, guild: discord.Guild, spec: dict):
     results = []
+    me = guild.me
     for sub in spec["subsystems"]:
         cfg = dm.get_guild_data(guild.id, sub["config_key"], {})
         if not isinstance(cfg, dict):
             cfg = {}
         checks = []
+        module = getattr(bot, sub.get("module_attr", ""), None)
+        checks.append((module is not None,
+                       "module loaded" if module is not None else "module NOT loaded"))
         if sub.get("supports_toggle", True):
             checks.append((bool(cfg.get("enabled")), "enabled" if cfg.get("enabled")
                            else "disabled (enable it to activate the feature)"))
@@ -945,15 +1110,23 @@ async def run_diagnostics(bot, guild: discord.Guild, spec: dict):
                     checks.append((False, f"{setting['label']}: not set"))
                 else:
                     channel = guild.get_channel(int(value)) if str(value).isdigit() else None
-                    checks.append((channel is not None,
-                                   f"{setting['label']}: {'#' + channel.name if channel else 'channel was deleted'}"))
+                    ok = channel is not None
+                    detail = f"{setting['label']}: {'#' + channel.name if channel else 'channel was deleted'}"
+                    if ok and me is not None:
+                        perms = channel.permissions_for(me)
+                        if not perms.send_messages:
+                            ok = False
+                            detail += " — ⚠️ I cannot send messages there"
+                    checks.append((ok, detail))
             elif setting["type"] == "role":
                 if not value:
                     checks.append((False, f"{setting['label']}: not set"))
                 else:
-                    role = guild.get_role(int(value)) if str(value).isdigit() else None
-                    checks.append((role is not None,
-                                   f"{setting['label']}: {'@' + role.name if role else 'role was deleted'}"))
+                    role_ids = value if isinstance(value, list) else [value]
+                    for rid in (role_ids or [None]):
+                        role = guild.get_role(int(rid)) if str(rid).isdigit() else None
+                        checks.append((role is not None,
+                                       f"{setting['label']}: {'@' + role.name if role else 'role was deleted'}"))
             else:
                 checks.append((bool(value), f"{setting['label']}: {value or 'not set'}"))
         for label, mf in sub.get("metrics", []):
