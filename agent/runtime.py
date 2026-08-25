@@ -160,7 +160,15 @@ class AgentRuntime:
 
     async def run(self, interaction, user_request: str, system_prompt: str, initial_result: Optional[dict] = None):
         self._original_request = user_request
-        classification = classify_request(user_request)
+        # History-aware classification inside runtime as well (same-channel follow-up)
+        try:
+            from agent.request_classifier import classify_with_history
+            from history_manager import history_manager
+            _rh = await history_manager.get_enhanced_context(self.guild.id, getattr(self.user, "id", 0), depth=8)
+            _recent = [{"role": m.get("role",""), "content": m.get("content","")} for m in (_rh or [])]
+            classification = classify_with_history(user_request, _recent)
+        except Exception:
+            classification = classify_request(user_request)
         self.state = AgentState.EXECUTION_REQUIRED if classification.execution_required else AgentState.UNDERSTANDING
         job = AgentJob(job_id=f"job_{uuid.uuid4().hex[:8]}", guild_id=self.guild.id, user_id=getattr(self.user, "id", 0), goal=user_request[:120])
         result = AgentExecutionResult(job=job, execution_required=classification.execution_required, request_class=classification.kind.value, requested_count=classification.requested_count)
@@ -185,6 +193,30 @@ class AgentRuntime:
                 messages.append({"role": "user", "content": ctx_text})
         except Exception as e:
             logger.debug(f"server context injection failed: {e}")
+
+        # SAME-CHANNEL MEMORY: inject prior conversation so short follow-ups
+        # like "yes / proceed / do it again" resolve to the prior mutation.
+        # ai_client also injects history, but explicit extra_messages helps the
+        # planner see the pending intent before tool selection.
+        try:
+            from history_manager import history_manager
+            hist = await history_manager.get_enhanced_context(self.guild.id, getattr(self.user, "id", 0), depth=12)
+            if hist:
+                # Keep last 8 exchanges + system summary; avoid duplicating server vision
+                recent_hist = hist[-17:] if len(hist) > 17 else hist
+                hist_lines = []
+                for m in recent_hist:
+                    role = m.get("role","")
+                    content = (m.get("content") or "")[:400]
+                    if role == "system":
+                        hist_lines.append(f"[SUMMARY] {content[:600]}")
+                    else:
+                        hist_lines.append(f"{role}: {content}")
+                if hist_lines:
+                    messages.append({"role": "user", "content": "PRIOR CONVERSATION (same guild/channel, same user — use to resolve follow-ups like 'yes/proceed/do it again'):\n" + "\n".join(hist_lines)})
+        except Exception as e:
+            logger.debug(f"conversation history injection failed: {e}")
+
         step = 0
 
         while True:

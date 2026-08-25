@@ -19,7 +19,34 @@ class AgentHarness:
         except Exception as exc: logger.warning(f"[AGENT] native tool schema install failed: {exc}")
 
     async def run(self,request,guild,user,*,interaction=None,initial_result=None,system_prompt="",on_progress=None):
-        classification=classify_request(request)
+        # History-aware classification: same guild/channel follow-ups like
+        # "yes/proceed/do it" after "Discovery completed ... tell me to proceed"
+        # must stay as MUTATION, not fall back to CHAT (screenshot bug).
+        _hist = None
+        recent = None
+        base_classification = classify_request(request)
+        try:
+            from history_manager import history_manager
+            from agent.request_classifier import classify_with_history
+            _hist = await history_manager.get_enhanced_context(getattr(guild,'id',0), getattr(user,'id',0), depth=10)
+            recent = [{"role": m.get("role",""), "content": m.get("content","")} for m in (_hist or [])]
+            classification = classify_with_history(request, recent)
+            # Expand vague confirmation into full intent so planner knows WHAT to proceed with
+            if base_classification.kind == RequestClass.CHAT and classification.execution_required and recent:
+                # Find last user mutation prior to the pending assistant
+                last_user_mut = ""
+                for m in reversed(recent):
+                    if m.get("role") == "user" and any(p in (m.get("content") or "").lower() for p in ("delete","remove","create","make","add","duplicate","automation","channel","role")):
+                        last_user_mut = (m.get("content") or "").strip()[:800]
+                        if last_user_mut.lower() != request.lower().strip():
+                            break
+                if last_user_mut:
+                    # Prepend prior intent: "delete duplicate channels" + " | follow-up: yes proceed"
+                    request = f"{last_user_mut} | follow-up: {request.strip()}"
+                    logger.info(f"[AGENT] expanded confirmation '{request[:120]}' from history")
+        except Exception as e:
+            logger.debug(f"[AGENT] history-aware classify failed: {e}")
+            classification = base_classification
         if classification.kind==RequestClass.CHAT:
             response=await self.bot.ai.chat(guild_id=getattr(guild,'id',0),user_id=getattr(user,'id',0),user_input=request,system_prompt=system_prompt or 'You are Miro, a helpful Discord assistant.',persist=True)
             return HarnessResult(classification,response=response,handled=True)
