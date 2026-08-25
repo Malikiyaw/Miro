@@ -369,9 +369,9 @@ class AutoResponderPanel(View):
         embed = discord.Embed(title="📤 Exported Auto Responders", color=discord.Color.green())
         if len(json_str) > 4000:
             embed.description = "Data too large for embed. Sending as file."
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             file = discord.File(fp=json_str.encode(), filename="auto_responders.json")
-            await interaction.followup.send(file=file)
+            await interaction.followup.send(file=file, ephemeral=True)
         else:
             embed.add_field(name="JSON Data", value=f"```json\n{json_str}\n```", inline=False)
             await interaction.response.send_message(embed=embed, ephemeral=True)

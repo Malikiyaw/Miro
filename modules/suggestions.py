@@ -191,7 +191,26 @@ class SuggestionSystem:
         return SuggestionsConfigPanel(self.bot, guild_id)
 
     def get_persistent_views(self):
-        return [SuggestionVoteView(self, 0)]
+        return [SuggestionVoteView(self, 0), SuggestionPanelView(self)]
+
+
+class SuggestionPanelView(discord.ui.View):
+    """Persistent 'Make a Suggestion' panel posted in the suggestions channel.
+    Survives restarts; guild resolved from the interaction at click time."""
+
+    def __init__(self, suggestion_system):
+        super().__init__(timeout=None)
+        self.suggestion_system = suggestion_system
+
+    @discord.ui.button(label="Make a Suggestion", style=discord.ButtonStyle.primary,
+                       emoji="💡", custom_id="miro_suggest")
+    async def suggest_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        config = dm.get_guild_data(interaction.guild.id, "suggestions_config", {})
+        if not config.get("enabled", False):
+            return await interaction.response.send_message(
+                "❌ The suggestion system is currently disabled.", ephemeral=True)
+        await interaction.response.send_modal(SuggestionModal(self.suggestion_system))
+
 
 class SuggestionModal(discord.ui.Modal, title="Create Suggestion"):
     title = discord.ui.TextInput(label="Title", placeholder="Brief title for your suggestion")

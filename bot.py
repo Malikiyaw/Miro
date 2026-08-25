@@ -185,11 +185,10 @@ class MiroBot(commands.Bot):
 
         # Register all system persistent views
         views_to_register = [
-            # Auto setup buttons
+            # Auto setup buttons (CreateTicketButton/SuggestionButton stubs were
+            # replaced by the real TicketPanelView / SuggestionPanelView)
             auto_setup.VerifyButton(),
             auto_setup.AcceptRulesButton(),
-            auto_setup.CreateTicketButton(),
-            auto_setup.SuggestionButton(),
             auto_setup.ApplyStaffButton(),
 
             # System specific views

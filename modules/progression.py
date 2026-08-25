@@ -1516,7 +1516,7 @@ class Shop:
         if discounts:
             embed.set_footer(text="🔥 Limited time offers active!")
         
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     
     async def buy_item(self, interaction: discord.Interaction, item_name: str):
         guild_id = interaction.guild.id
@@ -1567,7 +1567,7 @@ class Shop:
         })
         dm.update_guild_data(guild_id, "purchases", purchases)
         
-        await interaction.response.send_message(f"✅ Purchased **{item_name}** for {price}!")
+        await interaction.response.send_message(f"✅ Purchased **{item_name}** for {price}!", ephemeral=True)
     
     """Admin: Add custom items"""
     async def add_item(self, guild_id: int, name: str, price: int, item_type: str, 
@@ -1977,7 +1977,7 @@ Make it fun and varied. Consider message sending, reactions, voice chat, command
         user_data["prestige"] = current_prestige + 1
         dm.update_guild_data(guild_id, f"user_{user_id}", user_data)
 
-        await interaction.response.send_message(f"🔱 **PRESTIGE!** You have reset to level 1 and reached Prestige **{current_prestige + 1}**!")
+        await interaction.response.send_message(f"🔱 **PRESTIGE!** You have reset to level 1 and reached Prestige **{current_prestige + 1}**!", ephemeral=True)
 
     async def mini_game_dice(self, interaction: discord.Interaction, bet: int):
         if bet <= 0: return await interaction.response.send_message("Bet must be positive!", ephemeral=True)
@@ -1991,7 +1991,7 @@ Make it fun and varied. Consider message sending, reactions, voice chat, command
             self.bot.economy.add_coins(interaction.guild.id, interaction.user.id, -bet)
             result = f"You rolled {user_roll}, I rolled {bot_roll}. **You lost {bet} coins.**"
         else: result = f"Both rolled {user_roll}. **It's a draw!**"
-        await interaction.response.send_message(f"🎲 {result}")
+        await interaction.response.send_message(f"🎲 {result}", ephemeral=True)
 
     async def mini_game_flip(self, interaction: discord.Interaction, side: str, bet: int):
         if bet <= 0: return await interaction.response.send_message("Bet must be positive!", ephemeral=True)
@@ -2004,7 +2004,7 @@ Make it fun and varied. Consider message sending, reactions, voice chat, command
         else:
             self.bot.economy.add_coins(interaction.guild.id, interaction.user.id, -bet)
             res_text = f"It was **{result_side}**... **You lost {bet} coins.**"
-        await interaction.response.send_message(f"🪙 {res_text}")
+        await interaction.response.send_message(f"🪙 {res_text}", ephemeral=True)
 
     async def mini_game_slots(self, interaction: discord.Interaction, bet: int):
         if bet <= 0: return await interaction.response.send_message("Bet must be positive!", ephemeral=True)
@@ -2024,7 +2024,7 @@ Make it fun and varied. Consider message sending, reactions, voice chat, command
         else:
             self.bot.economy.add_coins(interaction.guild.id, interaction.user.id, -bet)
             res_text = f"{slot_str}\n**You lost {bet} coins.**"
-        await interaction.response.send_message(f"🎰 {res_text}")
+        await interaction.response.send_message(f"🎰 {res_text}", ephemeral=True)
 
     async def mini_game_trivia(self, interaction: discord.Interaction):
         # Sample trivia questions
@@ -2034,7 +2034,7 @@ Make it fun and varied. Consider message sending, reactions, voice chat, command
             {"q": "What is the largest planet in our solar system?", "a": "Jupiter"}
         ]
         q_data = random.choice(questions)
-        await interaction.response.send_message(f"❓ **Trivia:** {q_data['q']}\n(Reply with the answer in 15s)")
+        await interaction.response.send_message(f"❓ **Trivia:** {q_data['q']}\n(Reply with the answer in 15s)", ephemeral=True)
         def check(m): return m.author == interaction.user and m.channel == interaction.channel
         try:
             msg = await self.bot.wait_for("message", check=check, timeout=15.0)

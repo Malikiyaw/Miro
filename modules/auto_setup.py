@@ -566,6 +566,10 @@ class AutoSetupSystem:
                     success = await self.setup_tickets(guild, user)
                 elif system == "welcome_leave":
                     success = await self.setup_welcome(guild, user)
+                elif system == "applications":
+                    success = await self.setup_applications(guild, user)
+                elif system == "appeals":
+                    success = await self.setup_appeals(guild, user)
                 else:
                     success = await self.setup_generic_system(guild, system, user)
 
@@ -619,6 +623,19 @@ class AutoSetupSystem:
                 "kick_new_accounts": False
             }
             dm.update_guild_data(guild.id, "verification_config", config)
+
+            # Post the persistent Verify panel so members can actually click it
+            try:
+                from modules.member_management import VerificationView
+                await self._post_panel(
+                    guild, "verification", verify_channel,
+                    "🔐 Verification Required",
+                    "Click the **Verify Me** button below to verify yourself "
+                    "and gain full access to the server.",
+                    discord.Color.blue(),
+                    VerificationView(self.bot.verification, guild.id))
+            except Exception as e:
+                logger.warning(f"Verify panel post failed: {e}")
 
             return True
         except Exception as e:
@@ -700,6 +717,19 @@ class AutoSetupSystem:
             }
             dm.update_guild_data(guild.id, "tickets_config", config)
 
+            # Post the persistent Create-Ticket panel into the queue channel
+            try:
+                from modules.tickets import TicketPanelView
+                await self._post_panel(
+                    guild, "tickets", ticket_queue,
+                    "🎫 Support Tickets",
+                    "Need help? Click **Create Ticket** below and a staff member "
+                    "will assist you as soon as possible.",
+                    discord.Color.blue(),
+                    TicketPanelView(self.bot.tickets))
+            except Exception as e:
+                logger.warning(f"Ticket panel post failed: {e}")
+
             return True
         except Exception as e:
             logger.error(f"Tickets setup failed: {e}")
@@ -750,7 +780,6 @@ class AutoSetupSystem:
         "guardian": {"config_key": "guardian_config"},
         "moderation": {"channels": ["mod-log"], "config_key": "moderation_config",
                        "extra": {"log_channel": "{channel:mod-log}"}},
-        "appeals": None,  # has a dedicated setup_appeals on AutoSetup facade
         "automod": {"channels": ["mod-log"], "config_key": "automod_config",
                     "extra": {"log_channel_id": "{channel:mod-log}",
                               "rules": {}}},
@@ -759,7 +788,8 @@ class AutoSetupSystem:
                                 "star_threshold": 3}},
         "suggestions": {"channels": ["suggestions"], "config_key": "suggestions_config",
                         "extra": {"suggestions_channel": "{channel:suggestions}",
-                                  "staff_roles": []}},
+                                  "staff_roles": []},
+                        "panel": True},
         "giveaways": {"channels": ["giveaways"], "config_key": "giveaways_config"},
         "announcements": {"channels": ["announcements"], "config_key": "announcements_config",
                           "extra": {"announcement_channel": "{channel:announcements}",
@@ -802,6 +832,146 @@ class AutoSetupSystem:
             return existing
         return await guild.create_text_channel(name)
 
+    async def _post_panel(self, guild, system, channel, title, description, color, view):
+        """Post a user-facing panel (button) into a channel. Never fails the install."""
+        try:
+            embed = discord.Embed(title=title, description=description, color=color)
+            await channel.send(embed=embed, view=view)
+            return True
+        except Exception as e:
+            logger.warning(f"Panel post failed for {system} in #{channel.name}: {e}")
+            return False
+
+    async def _create_setup_channel(self, guild, name) -> Optional[discord.TextChannel]:
+        """Create a text channel by name, reusing one if it already exists."""
+        try:
+            existing = discord.utils.get(guild.text_channels, name=name)
+            if existing:
+                return existing
+            return await guild.create_text_channel(name)
+        except Exception as e:
+            logger.error(f"Failed to create channel '{name}': {e}")
+            return None
+
+    async def setup_verification(self, interaction, params=None) -> bool:
+        return await super().setup_verification(interaction.guild, interaction.user)
+
+    async def setup_economy(self, interaction, params=None) -> bool:
+        return await super().setup_economy(interaction.guild, interaction.user)
+
+    async def setup_leveling(self, interaction, params=None) -> bool:
+        return await super().setup_leveling(interaction.guild, interaction.user)
+
+    async def setup_tickets(self, interaction, params=None) -> bool:
+        return await super().setup_tickets(interaction.guild, interaction.user)
+
+    async def setup_welcome(self, interaction, params=None) -> bool:
+        return await super().setup_welcome(interaction.guild, interaction.user)
+
+    async def setup_applications(self, source, params=None) -> bool:
+        """Set up the applications system with a staff-apply channel.
+
+        Accepts an Interaction (actions.py path) or a Guild (autosetup path).
+        """
+        try:
+            guild = source if isinstance(source, discord.Guild) else source.guild
+            channel = await self._create_setup_channel(guild, "applications")
+            if not channel:
+                return False
+            self._record(guild.id, "applications", "channel", channel.id)
+            config = {
+                "enabled": True,
+                "channel_id": channel.id,
+                "staff_roles": [],
+                "questions": [
+                    "Why do you want to join the staff team?",
+                    "What experience do you have?",
+                    "How active are you on this server?",
+                    "What would you improve?",
+                    "Anything else we should know?",
+                ],
+            }
+            dm.update_guild_data(guild.id, "application_config", config)
+            dm.update_guild_data(guild.id, "applications_channel", channel.id)
+            embed = discord.Embed(
+                title="📋 Staff Applications",
+                description="Interested in joining the staff team? Click the button below to apply!",
+                color=discord.Color.green(),
+            )
+            await channel.send(embed=embed, view=ApplyStaffButton(guild_id=guild.id))
+            return True
+        except Exception as e:
+            logger.error(f"Applications setup failed: {e}")
+            return False
+
+    async def setup_appeals(self, source, params=None) -> bool:
+        """Set up the appeals system with an appeals channel.
+
+        Accepts an Interaction (actions.py path) or a Guild (autosetup path).
+        """
+        try:
+            guild = source if isinstance(source, discord.Guild) else source.guild
+            channel = await self._create_setup_channel(guild, "appeals")
+            if not channel:
+                return False
+            self._record(guild.id, "appeals", "channel", channel.id)
+            config = {
+                "appeals_channel_id": channel.id,
+                "log_channel_id": channel.id,
+                "cooldown_days": 30,
+                "reviewer_role_id": None,
+                "questions": [
+                    "Why were you banned?",
+                    "Why should you be unbanned?",
+                    "What will you do differently?",
+                    "Any evidence to provide?",
+                ],
+            }
+            dm.update_guild_data(guild.id, "appeals_config", config)
+            embed = discord.Embed(
+                title="⚖️ Moderation Appeals",
+                description="If you have been banned or punished and wish to appeal, click the button below.",
+                color=discord.Color.blue(),
+            )
+            try:
+                from modules.security import AppealPersistentView
+                view = AppealPersistentView()
+            except Exception:
+                view = ApplyStaffButton(guild_id=guild.id)
+            await channel.send(embed=embed, view=view)
+            return True
+        except Exception as e:
+            logger.error(f"Appeals setup failed: {e}")
+            return False
+
+    # Panels posted into the first created channel after install (user-facing buttons)
+    PANEL_FACTORIES = {
+        "suggestions": {
+            "title": "💡 Suggestions",
+            "description": "Have an idea to improve the server? "
+                           "Click **Make a Suggestion** below — staff and members can vote on it.",
+        },
+    }
+
+    async def _post_system_panel(self, guild, system, channels):
+        spec = self.PANEL_FACTORIES.get(system)
+        if not spec or not channels:
+            return
+        from importlib import import_module
+        try:
+            if system == "suggestions":
+                view = import_module("modules.suggestions").SuggestionPanelView(self.bot.suggestions)
+            else:
+                return
+            first_channel = guild.get_channel(int(list(channels.values())[0]))
+            if first_channel is None:
+                return
+            await self._post_panel(
+                guild, system, first_channel,
+                spec["title"], spec["description"], discord.Color.blue(), view)
+        except Exception as e:
+            logger.warning(f"{system} panel post failed: {e}")
+
     async def _install_from_table(self, guild, system, spec) -> bool:
         """Generic real installer driven by INSTALL_TABLE entries."""
         channels = {}
@@ -832,6 +1002,9 @@ class AutoSetupSystem:
                 value = [roles[rname]] if rname in roles else []
             config[key] = value
         dm.update_guild_data(guild.id, spec["config_key"], config)
+
+        if spec.get("panel"):
+            await self._post_system_panel(guild, system, channels)
         return True
 
     async def setup_generic_system(self, guild, system, user) -> bool:
@@ -876,97 +1049,6 @@ class AutoSetup(AutoSetupSystem):
     these with (interaction, params), so this class adapts the call and adds
     the missing per-system setup methods.
     """
-
-    async def _create_setup_channel(self, guild, name) -> Optional[discord.TextChannel]:
-        """Create a text channel by name, reusing one if it already exists."""
-        try:
-            existing = discord.utils.get(guild.text_channels, name=name)
-            if existing:
-                return existing
-            return await guild.create_text_channel(name)
-        except Exception as e:
-            logger.error(f"Failed to create channel '{name}': {e}")
-            return None
-
-    async def setup_verification(self, interaction, params=None) -> bool:
-        return await super().setup_verification(interaction.guild, interaction.user)
-
-    async def setup_economy(self, interaction, params=None) -> bool:
-        return await super().setup_economy(interaction.guild, interaction.user)
-
-    async def setup_leveling(self, interaction, params=None) -> bool:
-        return await super().setup_leveling(interaction.guild, interaction.user)
-
-    async def setup_tickets(self, interaction, params=None) -> bool:
-        return await super().setup_tickets(interaction.guild, interaction.user)
-
-    async def setup_welcome(self, interaction, params=None) -> bool:
-        return await super().setup_welcome(interaction.guild, interaction.user)
-
-    async def setup_applications(self, interaction, params=None) -> bool:
-        """Set up the applications system with a staff-apply channel."""
-        try:
-            guild = interaction.guild
-            channel = await self._create_setup_channel(guild, "applications")
-            if not channel:
-                return False
-            self._record(guild.id, "applications", "channel", channel.id)
-            config = {
-                "enabled": True,
-                "channel_id": channel.id,
-                "staff_roles": [],
-                "questions": [
-                    "Why do you want to join the staff team?",
-                    "What experience do you have?",
-                    "How active are you on this server?",
-                    "What would you improve?",
-                    "Anything else we should know?",
-                ],
-            }
-            dm.update_guild_data(guild.id, "application_config", config)
-            dm.update_guild_data(guild.id, "applications_channel", channel.id)
-            embed = discord.Embed(
-                title="📋 Staff Applications",
-                description="Interested in joining the staff team? Click the button below to apply!",
-                color=discord.Color.green(),
-            )
-            await channel.send(embed=embed, view=ApplyStaffButton(guild_id=guild.id))
-            return True
-        except Exception as e:
-            logger.error(f"Applications setup failed: {e}")
-            return False
-
-    async def setup_appeals(self, interaction, params=None) -> bool:
-        """Set up the appeals system with an appeals channel."""
-        try:
-            guild = interaction.guild
-            channel = await self._create_setup_channel(guild, "appeals")
-            if not channel:
-                return False
-            self._record(guild.id, "appeals", "channel", channel.id)
-            config = {
-                "appeals_channel_id": channel.id,
-                "log_channel_id": channel.id,
-                "cooldown_days": 30,
-                "reviewer_role_id": None,
-                "questions": [
-                    "Why were you banned?",
-                    "Why should you be unbanned?",
-                    "What will you do differently?",
-                    "Any evidence to provide?",
-                ],
-            }
-            dm.update_guild_data(guild.id, "appeals_config", config)
-            embed = discord.Embed(
-                title="⚖️ Moderation Appeals",
-                description="If you have been banned or punished and wish to appeal, click the button below.",
-                color=discord.Color.blue(),
-            )
-            await channel.send(embed=embed, view=ApplyStaffButton(guild_id=guild.id))
-            return True
-        except Exception as e:
-            logger.error(f"Appeals setup failed: {e}")
-            return False
 
     async def setup_moderation(self, interaction, params=None) -> bool:
         """Set up moderation with a mod-log channel and moderator role."""

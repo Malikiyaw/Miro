@@ -529,12 +529,12 @@ class _SlashChannelShim:
         if not self._responded:
             self._responded = True
             try:
-                await self.interaction.response.send_message(content or "", embed=embed)
+                await self.interaction.response.send_message(content or "", embed=embed, ephemeral=True)
                 return
             except Exception:
                 pass
         try:
-            await self.interaction.followup.send(content or "", embed=embed)
+            await self.interaction.followup.send(content or "", embed=embed, ephemeral=True)
         except Exception:
             pass
 

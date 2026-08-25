@@ -1164,9 +1164,9 @@ async def open_system_panel(interaction: discord.Interaction, group_key: str):
         return
     try:
         if interaction.response.is_done():
-            view.message = await interaction.followup.send(embed=embed, view=view, wait=True)
+            view.message = await interaction.followup.send(embed=embed, view=view, wait=True, ephemeral=True)
         else:
-            await interaction.response.send_message(embed=embed, view=view)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
             view.message = await interaction.original_response()
     except Exception:
         pass

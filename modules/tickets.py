@@ -293,7 +293,22 @@ class TicketSystem:
 
     def get_persistent_views(self):
         """Get persistent views for ticket buttons."""
-        return [TicketControlView(self, "")]  # Ticket ID determined at runtime
+        return [TicketControlView(self, ""), TicketPanelView(self)]  # Ticket ID determined at runtime
+
+
+class TicketPanelView(discord.ui.View):
+    """Persistent 'Create Ticket' panel posted in the ticket queue channel.
+    Survives restarts; guild resolved from the interaction at click time."""
+
+    def __init__(self, ticket_system):
+        super().__init__(timeout=None)
+        self.ticket_system = ticket_system
+
+    @discord.ui.button(label="Create Ticket", style=discord.ButtonStyle.primary,
+                       emoji="🎫", custom_id="miro_create_ticket")
+    async def create_ticket_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.ticket_system.create_ticket(interaction)
+
 
 class TicketControlView(discord.ui.View):
     """Control panel for active tickets."""

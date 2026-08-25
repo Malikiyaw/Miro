@@ -748,7 +748,7 @@ class ModmailThreadView(ui.View):
             try: await user.send(close_msg)
             except: pass
 
-            await interaction.response.send_message("🔒 Thread closed.")
+            await interaction.response.send_message("🔒 Thread closed.", ephemeral=True)
             await interaction.channel.edit(archived=True) if isinstance(interaction.channel, discord.Thread) else await interaction.channel.delete()
 
     @ui.button(label="Block", style=ButtonStyle.danger, emoji="🚫", custom_id="modmail_block")
@@ -764,7 +764,7 @@ class ModmailThreadView(ui.View):
 
     @ui.button(label="Escalate", style=ButtonStyle.secondary, emoji="⬆️", custom_id="modmail_escalate")
     async def escalate(self, interaction: Interaction, button: ui.Button):
-        await interaction.response.send_message("⬆️ Thread escalated to senior staff.")
+        await interaction.response.send_message("⬆️ Thread escalated to senior staff.", ephemeral=True)
 
     @ui.button(label="History", style=ButtonStyle.secondary, emoji="📋", custom_id="modmail_history")
     async def history(self, interaction: Interaction, button: ui.Button):
