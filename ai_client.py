@@ -114,9 +114,24 @@ class AIClient:
 
     @staticmethod
     async def _persist_exchange(guild_id:int,user_id:int,user_input:str,result:Dict[str,Any]):
-        """Store the exchange so long conversations never lose the user."""
+        """Store the exchange so long conversations never lose the user.
+        FIX: tool-call-only responses (empty summary) previously skipped saving,
+        so the user's original request was lost before the agent ran — the next
+        turn ('proceed') had nothing to proceed with."""
         try:
             reply=str((result or {}).get('summary') or (result or {}).get('content') or '')[:4000]
+            if not reply.strip():
+                # Persist a marker for agent plan turns so follow-ups like
+                # "yes / proceed / do it" can resolve the pending intent.
+                calls=(result or {}).get('tool_calls') or (result or {}).get('actions') or []
+                if isinstance(calls,list) and calls:
+                    names=[]
+                    for c in calls[:5]:
+                        if isinstance(c,dict):
+                            n=c.get('name') or ((c.get('function') or {}).get('name'))
+                            if n: names.append(str(n))
+                    if names:
+                        reply="[agent plan started: "+", ".join(names)+" — awaiting user confirmation/result]"
             if not guild_id or not user_id or not reply.strip():
                 return
             await history_manager.add_exchange(guild_id,user_id,str(user_input)[:2000],reply)

@@ -6,7 +6,7 @@ from agent.state import (
     AgentExecutionResult, FinalAIResponse, AgentJob, classify_error,
 )
 from agent.tools import find_duplicate_channels, validate_params
-from agent.request_classifier import classify_request
+from agent.request_classifier import classify_request, classify_with_history
 from agent.completion_gate import CompletionGate
 
 
@@ -18,7 +18,22 @@ class AgentRuntime(_AgentRuntime):
         elif "user_request" in kwargs:
             request = str(kwargs.get("user_request") or "")
 
-        classification = classify_request(request)
+        # FIX: use history-aware classification so short follow-ups
+        # ("proceed" / "yes") after a pending plan keep execution_required.
+        # The base classifier clobbered the history-upgraded result.
+        classification = None
+        try:
+            guild = getattr(self, "guild", None)
+            user = getattr(self, "user", None)
+            if guild is not None and user is not None:
+                from history_manager import history_manager as _hm
+                _hist = await _hm.get_enhanced_context(guild.id, getattr(user, "id", 0), depth=8)
+                _recent = [{"role": m.get("role", ""), "content": m.get("content", "")} for m in (_hist or [])]
+                classification = classify_with_history(request, _recent)
+        except Exception:
+            classification = None
+        if classification is None:
+            classification = classify_request(request)
         if classification.execution_required:
             self.state = AgentState.EXECUTION_REQUIRED
 

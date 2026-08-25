@@ -154,7 +154,40 @@ class SlashCommands(commands.Cog):
         # Native provider responses carry calls under `tool_calls`; legacy
         # JSON plans under `actions`. Both must execute.
         actions = result.get("tool_calls") or result.get("actions") or []
-        if isinstance(actions, list) and actions:
+
+        # SAME-CHANNEL MEMORY: a short confirmation ("proceed", "yes", "do it")
+        # after a pending agent plan must re-enter the agent path even when the
+        # plain-chat model returned no tool calls. Previously the turn-1 plan
+        # and the pause message were never persisted, so this check had nothing
+        # to resolve and the user got a generic "could you clarify" reply.
+        force_agent = False
+        if not (isinstance(actions, list) and actions):
+            try:
+                from agent.request_classifier import classify_with_history
+                from history_manager import history_manager as _hm
+                _hist = await _hm.get_enhanced_context(interaction.guild.id, interaction.user.id, depth=10)
+                _recent = [{"role": m.get("role", ""), "content": m.get("content", "")} for m in (_hist or [])]
+                _cls = classify_with_history(text, _recent)
+                if _cls.execution_required:
+                    force_agent = True
+                    # Expand the vague follow-up with the prior mutation intent
+                    _last_mut = ""
+                    for m in reversed(_recent):
+                        _c = (m.get("content") or "")
+                        if m.get("role") == "user" and any(
+                                p in _c.lower() for p in ("create", "delete", "remove", "make", "add",
+                                                          "automation", "channel", "role", "duplicate",
+                                                          "setup", "configure", "ban", "kick", "lock")):
+                            _last_mut = _c.strip()[:800]
+                            if _last_mut.lower() != text.strip().lower():
+                                break
+                    if _last_mut:
+                        text = f"{_last_mut} | follow-up: {text.strip()}"
+                    logger.info(f"/bot follow-up upgraded to agent execution: {text[:120]}")
+            except Exception as e:
+                logger.debug(f"/bot history-aware follow-up check failed: {e}")
+
+        if (isinstance(actions, list) and actions) or force_agent:
             from core.guild_ai_config import GuildAIConfig
             gcfg = GuildAIConfig.load(interaction.guild.id)
             try:
@@ -209,8 +242,20 @@ class SlashCommands(commands.Cog):
                     ("You are Miro, a helpful and proactive Discord server assistant "
                      "executing an operation for a trusted administrator."),
                     initial_result={"summary": str(result.get("summary") or ""),
-                                    "tool_calls": actions})
+                                    "tool_calls": actions} if actions else None)
                 reply = final.text or "Done."
+
+                # PERSIST the agent final — including confirmation pauses like
+                # "tell me to proceed" — so the next turn can resolve "proceed".
+                try:
+                    from history_manager import history_manager as _hm2
+                    if reply.strip():
+                        await _hm2.add_exchange(
+                            interaction.guild.id, interaction.user.id,
+                            text[:2000], reply[:4000])
+                except Exception as _pe:
+                    logger.debug(f"/bot agent final persist failed: {_pe}")
+
                 # Final answer goes out as a fresh message; the progress
                 # message above stays as the live execution log.
                 if exec_result.observations:
