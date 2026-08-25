@@ -346,7 +346,7 @@ class DataManager:
         try:
             async with aiosqlite.connect(self.db_path, isolation_level=None) as db:
                 cursor = await db.execute(
-                    "SELECT role, content, timestamp FROM exchanges WHERE guild_id = ? AND user_id = ? ORDER BY timestamp DESC LIMIT ?",
+                    "SELECT id, role, content, timestamp FROM exchanges WHERE guild_id = ? AND user_id = ? ORDER BY timestamp DESC LIMIT ?",
                     (guild_id, user_id, limit)
                 )
                 rows = await cursor.fetchall()
@@ -354,9 +354,10 @@ class DataManager:
                 history = []
                 for row in reversed(rows):
                     history.append({
-                        "role": row[0],
-                        "content": row[1],
-                        "timestamp": row[2]
+                        "id": row[0],
+                        "role": row[1],
+                        "content": row[2],
+                        "timestamp": row[3]
                     })
 
                 return history
@@ -367,6 +368,22 @@ class DataManager:
     async def load_exchanges(self, guild_id: int, user_id: int, limit: int = 50) -> List[Dict]:
         """Alias for get_conversation_history (used by history_manager)."""
         return await self.get_conversation_history(guild_id, user_id, limit)
+
+    async def delete_exchanges_before(self, guild_id: int, user_id: int, last_id: int) -> bool:
+        """Delete exchanges with id <= last_id for a user (used after summarization)."""
+        if not self.use_sqlite:
+            return False
+        try:
+            async with aiosqlite.connect(self.db_path, isolation_level=None) as db:
+                await db.execute("PRAGMA journal_mode=WAL")
+                await db.execute(
+                    "DELETE FROM exchanges WHERE guild_id = ? AND user_id = ? AND id <= ?",
+                    (guild_id, user_id, last_id)
+                )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete summarized exchanges: {e}")
+            return False
 
     async def save_conversation_summary(self, guild_id: int, user_id: int, summary: str):
         """Save a summarized conversation block to SQLite."""

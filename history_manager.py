@@ -59,15 +59,17 @@ class HistoryManager:
             if key not in history:
                 return False
             return len(history[key]) >= self.summary_threshold * 2
-        else:
-            exchanges = await dm.load_exchanges(guild_id, user_id)
-            return len(exchanges) >= self.summary_threshold
+        # SQLite path: load enough to measure real history length (the
+        # default limit=50 would cap the count and trigger summarization
+        # on EVERY message once 50 exchanges exist).
+        exchanges = await dm.load_exchanges(guild_id, user_id, limit=1000)
+        return len(exchanges) >= self.summary_threshold
 
     async def _create_summary(self, guild_id: int, user_id: int) -> bool:
         """Create a summary of older exchanges and remove them from active storage"""
         try:
             if dm.use_sqlite:
-                all_exchanges = await dm.load_exchanges(guild_id, user_id)
+                all_exchanges = await dm.load_exchanges(guild_id, user_id, limit=1000)
                 if len(all_exchanges) < self.summary_threshold:
                     return False
                     
@@ -88,6 +90,13 @@ class HistoryManager:
                 summary_text = " | ".join(summary_parts)
 
                 await dm.save_conversation_summary(guild_id, user_id, summary_text)
+
+                # Remove the summarized exchanges from active storage so
+                # summaries stay unique and the table stays small. The
+                # recent window (recent_depth*2) is kept in full.
+                summarized_ids = [e["id"] for e in exchanges_to_summarize if e.get("id")]
+                if summarized_ids:
+                    await dm.delete_exchanges_before(guild_id, user_id, max(summarized_ids))
 
                 return True
             else:
@@ -140,10 +149,12 @@ class HistoryManager:
             dm.save_json(self.history_file, history)
 
     async def get_context(self, guild_id: int, user_id: int, depth: int = 20) -> List[Dict[str, str]]:
-        """Retrieves the last N exchanges for the LLM context."""
+        """Retrieves the last N exchanges
+        Note: dm.load_exchanges already returns messages in chronological
+        order (oldest -> newest), so no reversal is needed here."""
         if dm.use_sqlite:
             exchanges = await dm.load_exchanges(guild_id, user_id, limit=depth*2)
-            return [{"role": e["role"], "content": e["content"]} for e in reversed(exchanges)]
+            return [{"role": e["role"], "content": e["content"]} for e in exchanges]
         else:
             key = self._get_key(guild_id, user_id)
             history = dm.load_json(self.history_file, default={})

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Long-conversation memory: 50+ exchanges kept per guild/user (plan requirement).
 # Override with MEMORY_DEPTH env var; per-guild ai_config.memory_depth wins too.
-MEMORY_DEPTH_DEFAULT = int(os.getenv("MEMORY_DEPTH", "50"))
+MEMORY_DEPTH_DEFAULT = int(os.getenv("MEMORY_DEPTH", "100"))
 
 class AIClientError(Exception):
     def __init__(self, status: int, message: str, error_type=None):

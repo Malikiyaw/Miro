@@ -102,7 +102,11 @@ class SlashCommands(commands.Cog):
                 system_prompt=(
                     "You are Miro, a helpful and proactive Discord server assistant. "
                     "Answer the user's question directly and concisely. If they describe a feature "
-                    "you could build, explain what you would set up for them."
+                    "you could build, explain what you would set up for them. "
+                    "You have full memory of this conversation. When the user replies with a "
+                    "follow-up such as 'proceed', 'yes', 'do it', 'continue' or 'go ahead', treat it "
+                    "as confirmation of the previously discussed request and act on it (or clearly "
+                    "state the next step) instead of asking what they mean."
                 ),
             )
         except asyncio.TimeoutError:
