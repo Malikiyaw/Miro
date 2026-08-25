@@ -3,6 +3,7 @@ from discord import ui, app_commands
 import asyncio
 import json
 import time
+import traceback
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
@@ -153,18 +154,21 @@ class SetupProgress:
         return embed
 
     async def start(self):
-        # Prefer editing the original response (works whether or not the
-        # interaction was already responded to); fall back to response edit.
+        # ACK IMMEDIATELY — component interactions must be acknowledged
+        # within 3 seconds or Discord shows "didn't respond in time".
+        # defer() acks without changing the message; after that @original
+        # reliably resolves to the wizard/confirm message for later edits.
+        try:
+            if not self.interaction.response.is_done():
+                await self.interaction.response.defer()
+        except Exception:
+            pass
         try:
             self.message = await self.interaction.original_response()
+            await self.message.edit(embed=self.build_embed(), view=None)
+            return
         except Exception:
             self.message = None
-        if self.message is not None:
-            try:
-                await self.message.edit(embed=self.build_embed(), view=None)
-                return
-            except Exception:
-                self.message = None
         try:
             await self.interaction.response.edit_message(embed=self.build_embed(), view=None)
             self.message = await self.interaction.original_response()
@@ -456,40 +460,51 @@ class AutoSetupSystem:
             return
 
         progress = SetupProgress(interaction, selected_systems, resume_from=resume_from)
-        await progress.start()
+        try:
+            await progress.start()
 
-        # Persist pending state (with completed steps for resume)
-        pending_setups = dm.load_json("pending_setups", default={})
-        pending_setups[gid] = {
-            "user_id": interaction.user.id,
-            "selected_systems": list(selected_systems),
-            "completed": list(done_before),
-            "started_at": time.time(),
-            "channel_id": interaction.channel.id,
-        }
-        dm.save_json("pending_setups", pending_setups)
-
-        results = await self.install_systems(interaction.guild, to_install,
-                                             interaction.user, interaction.channel,
-                                             progress=progress)
-
-        # Update pending bookkeeping
-        pending_setups = dm.load_json("pending_setups", default={})
-        ok_systems = done_before + [s for s, ok in results.items() if ok]
-        failed_systems = [s for s, ok in results.items() if not ok]
-
-        if not failed_systems:
-            completed_setups = dm.load_json("completed_setups", default={})
-            completed_setups[gid] = {
-                "completed_at": time.time(),
-                "systems_installed": sorted(set(ok_systems)),
-                "installed_by": interaction.user.id,
+            # Persist pending state (with completed steps for resume)
+            pending_setups = dm.load_json("pending_setups", default={})
+            pending_setups[gid] = {
+                "user_id": interaction.user.id,
+                "selected_systems": list(selected_systems),
+                "completed": list(done_before),
+                "started_at": time.time(),
+                "channel_id": interaction.channel.id,
             }
-            dm.save_json("completed_setups", completed_setups)
-            pending_setups.pop(gid, None)
             dm.save_json("pending_setups", pending_setups)
 
-        await self._send_final_report(progress, interaction, ok_systems, failed_systems)
+            results = await self.install_systems(interaction.guild, to_install,
+                                                 interaction.user, interaction.channel,
+                                                 progress=progress)
+
+            # Update pending bookkeeping
+            pending_setups = dm.load_json("pending_setups", default={})
+            ok_systems = done_before + [s for s, ok in results.items() if ok]
+            failed_systems = [s for s, ok in results.items() if not ok]
+
+            if not failed_systems:
+                completed_setups = dm.load_json("completed_setups", default={})
+                completed_setups[gid] = {
+                    "completed_at": time.time(),
+                    "systems_installed": sorted(set(ok_systems)),
+                    "installed_by": interaction.user.id,
+                }
+                dm.save_json("completed_setups", completed_setups)
+                pending_setups.pop(gid, None)
+                dm.save_json("pending_setups", pending_setups)
+
+            await self._send_final_report(progress, interaction, ok_systems, failed_systems)
+        except Exception as e:
+            logger.error(f"auto-setup installation crashed: {traceback.format_exc()}")
+            embed = discord.Embed(
+                title="❌ Setup Crashed",
+                description=f"Installation stopped unexpectedly:\n`{str(e)[:300]}`\n\n"
+                            "Systems already installed are kept. Use `/autosetup` again to "
+                            "resume the remaining ones.",
+                color=discord.Color.red(),
+            )
+            await safe_edit(interaction, embed=embed, view=None)
 
     async def _send_final_report(self, progress, interaction, ok_systems, failed_systems):
         """Post-install verification: diagnostics + configpanel jump buttons."""
