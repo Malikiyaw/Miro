@@ -93,16 +93,30 @@ SETUP_PRESETS = {
 
 
 class PreflightReport:
-    """Result of pre-installation checks."""
+    """Result of pre-installation checks.
+
+    Blocking failures (missing permissions) prevent installation.
+    Warnings (e.g. low role position) never block — setup proceeds and
+    the user is told what may need manual attention afterwards.
+    """
 
     def __init__(self):
         self.ok = True
+        self.has_warnings = False
         self.lines = []
 
     def add(self, passed: bool, text: str):
-        self.lines.append(("✅" if passed else "❌") + " " + text)
-        if not passed:
+        """Blocking check: failure prevents installation."""
+        if passed:
+            self.lines.append("✅ " + text)
+        else:
             self.ok = False
+            self.lines.append("❌ " + text)
+
+    def warn(self, text: str):
+        """Non-blocking advisory."""
+        self.has_warnings = True
+        self.lines.append("⚠️ " + text)
 
 
 class SetupProgress:
@@ -268,13 +282,21 @@ class AutoSetupSystem:
         report = PreflightReport()
         me = guild.me
         perms = me.guild_permissions if me else None
+        # Blocking checks — without these the installer cannot create anything
         report.add(bool(perms and perms.administrator), "Bot has Administrator permission")
         report.add(bool(perms and perms.manage_channels), "Bot can manage channels")
         report.add(bool(perms and perms.manage_roles), "Bot can manage roles")
+        # Advisory only: creating roles/channels works from any position.
+        # A low top-role just means Miro cannot ASSIGN/manage roles placed
+        # above it, so created roles may need manual reordering later.
         top = me.top_role if me else None
         others = [r for r in guild.roles if not r.is_default() and r != top]
-        report.add(bool(top and all(top.position > r.position for r in others)),
-                   f"Bot's highest role is near the top (position: {top.position if top else '?'})")
+        higher = sum(1 for r in others if top is None or r.position > top.position)
+        if top is None or higher:
+            report.warn(
+                f"Bot's highest role sits below {higher} other role(s) (position: {top.position if top else '?'}). "
+                "Setup will continue — roles created during setup are placed just under the bot's role; "
+                "drag them higher in Server Settings → Roles if members should outrank them.")
         return report
 
     # ------------------------------------------------------------------ #
@@ -330,6 +352,12 @@ class AutoSetupSystem:
 
         # Fresh run: show pre-flight report up front
         report = self.run_preflight(interaction.guild)
+        if not report.ok:
+            color = discord.Color.red()
+        elif report.has_warnings:
+            color = discord.Color.gold()
+        else:
+            color = discord.Color.green()
         embed = discord.Embed(
             title="🤖 Miro Bot Auto-Setup",
             description="Welcome to the automated setup wizard!\n\n"
@@ -337,7 +365,7 @@ class AutoSetupSystem:
                         "• Roles and channels for each system\n"
                         "• Default configurations · fully undoable afterwards\n\n"
                         "**Pre-flight checks:**\n" + "\n".join(report.lines),
-            color=discord.Color.green() if report.ok else discord.Color.red(),
+            color=color,
         )
         view = SetupStartView(self, preflight_ok=report.ok)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
