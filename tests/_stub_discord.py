@@ -81,6 +81,28 @@ ds.ui = ui
 appcmds = _DynModule("discord.app_commands")
 ds.app_commands = appcmds
 
+# discord.ext support (merged module files may import commands at top level)
+ext = _DynModule("discord.ext")
+extcmds = _DynModule("discord.ext.commands")
+
+
+class Cog:
+    @staticmethod
+    def listener(*a, **k):
+        def d(f):
+            return f
+        return d
+
+
+extcmds.Bot = _Auto
+extcmds.Cog = Cog
+extcmds.command = _d
+extcmds.group = _d
+extcmds.has_permissions = _d
+ext.commands = extcmds
+
 sys.modules["discord"] = ds
 sys.modules["discord.ui"] = ui
 sys.modules["discord.app_commands"] = appcmds
+sys.modules["discord.ext"] = ext
+sys.modules["discord.ext.commands"] = extcmds

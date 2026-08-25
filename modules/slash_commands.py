@@ -22,67 +22,50 @@ class SlashCommands(commands.Cog):
         """Start the auto-setup process."""
         await self.bot.auto_setup.start_setup(interaction)
 
+    # Legacy per-system names -> unified group keys (backward compatibility)
+    LEGACY_PANEL_ALIASES = {
+        "verification": "member_management", "welcome": "member_management",
+        "welcome_leave": "member_management",
+        "economy": "progression", "leveling": "progression",
+        "shop": "progression", "gamification": "progression",
+        "tournaments": "progression", "events": "communications",
+        "auto_mod": "moderation", "automod": "moderation", "warnings": "moderation",
+        "logging": "moderation", "modlog": "moderation", "appeals": "moderation",
+        "announcements": "communications", "reminders": "communications",
+        "modmail": "communications", "auto_publisher": "communications",
+        "starboard": "automation", "reaction_menus": "automation",
+        "role_buttons": "automation", "trigger_roles": "automation",
+        "staff_shifts": "staff_management", "staff_reviews": "staff_management",
+        "staff_promo": "staff_management", "applications": "staff_management",
+        "ai_chat": "ai",
+    }
+
     @app_commands.command(name="configpanel", description="Open configuration panel for a system")
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(system="The system to configure")
     @app_commands.choices(system=[
-        app_commands.Choice(name="Verification", value="verification"),
-        app_commands.Choice(name="Economy", value="economy"),
-        app_commands.Choice(name="Leveling", value="leveling"),
-        app_commands.Choice(name="Tickets", value="tickets"),
-        app_commands.Choice(name="Suggestions", value="suggestions"),
-        app_commands.Choice(name="Giveaways", value="giveaways"),
-        app_commands.Choice(name="Welcome/Leave", value="welcome_leave"),
-        app_commands.Choice(name="Reminders", value="reminders"),
-        app_commands.Choice(name="Anti-Raid", value="anti_raid"),
-        app_commands.Choice(name="Auto-Mod", value="auto_mod"),
-        app_commands.Choice(name="Warnings", value="warnings"),
-        app_commands.Choice(name="Announcements", value="announcements"),
-        app_commands.Choice(name="Auto-Responder", value="auto_responder"),
-        app_commands.Choice(name="Reaction Roles", value="reaction_roles"),
-        app_commands.Choice(name="Staff Shifts", value="staff_shifts"),
-        app_commands.Choice(name="Staff Reviews", value="staff_reviews"),
-        app_commands.Choice(name="Starboard", value="starboard"),
-        app_commands.Choice(name="AI Chat", value="ai_chat"),
-        app_commands.Choice(name="Modmail", value="modmail"),
-        app_commands.Choice(name="Logging", value="logging")
+        app_commands.Choice(name="👤 Member Management (Verification/Welcome/Leave)", value="member_management"),
+        app_commands.Choice(name="💰 Progression (Economy/Leveling/Shop/Games)", value="progression"),
+        app_commands.Choice(name="🎫 Tickets", value="tickets"),
+        app_commands.Choice(name="💡 Suggestions", value="suggestions"),
+        app_commands.Choice(name="🎁 Giveaways", value="giveaways"),
+        app_commands.Choice(name="📢 Communications (Announcements/Reminders/Modmail)", value="communications"),
+        app_commands.Choice(name="🛡️ Anti-Raid (+ Guardian)", value="anti_raid"),
+        app_commands.Choice(name="🔨 Moderation (Auto-Mod/Warnings/Appeals/Logs)", value="moderation"),
+        app_commands.Choice(name="⚙️ Automation (Auto-Responder/Roles/Starboard)", value="automation"),
+        app_commands.Choice(name="👮 Staff Management (Shifts/Reviews/Promotions/Applications)", value="staff_management"),
+        app_commands.Choice(name="🤖 Miro AI (Engine/Chat/Health)", value="ai"),
     ])
     async def configpanel(self, interaction: discord.Interaction, system: str):
-        """Open configuration panel for a system."""
+        """Open the unified configuration panel for a system group."""
         if not interaction.guild:
             return await interaction.response.send_message("This command only works in servers.", ephemeral=True)
-        panel = config_panels.get_config_panel(interaction.guild.id, system, self.bot)
-        if not panel:
-            return await interaction.response.send_message(f"❌ System '{system}' not found.", ephemeral=True)
+        resolved = self.LEGACY_PANEL_ALIASES.get(system, system)
+        # Panel construction reads server data — defer so Discord never times out
+        await interaction.response.defer(ephemeral=True)
+        from modules.system_panels import open_system_panel
+        await open_system_panel(interaction, resolved)
 
-        embed = discord.Embed(
-            title=f"⚙️ {system.replace('_', ' ').title()} Configuration",
-            description="Use the buttons below to configure this system.",
-            color=discord.Color.blue()
-        )
-
-        emoji, description = config_panels.get_system_info(system)
-        embed.add_field(name=f"{emoji} System", value=description, inline=False)
-
-        # Panels imported from feature modules (verification, economy, ...)
-        # don't share ConfigPanelView's accessor — fall back to their real
-        # storage key instead of crashing.
-        config = None
-        try:
-            config = panel.get_config()
-        except AttributeError:
-            key_overrides = {
-                "verification": "verification_config", "economy": "economy_config",
-                "leveling": "leveling_config", "tickets": "tickets_config",
-                "suggestions": "suggestions_config", "giveaways": "giveaways_config",
-            }
-            key = key_overrides.get(system, f"{system}_config")
-            config = dm.get_guild_data(interaction.guild.id, key, {})
-        if isinstance(config, dict) and config:
-            settings = "\n".join(f"**{k}:** `{str(v)[:50]}`" for k, v in list(config.items())[:8])
-            embed.add_field(name="Current Settings", value=settings or "_No settings_", inline=False)
-
-        await interaction.response.send_message(embed=embed, view=panel, ephemeral=True)
 
     # AI chat: /bot <text>
     @app_commands.command(name="bot", description="Chat with Miro's AI - ask anything or request features")

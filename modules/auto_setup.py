@@ -1,4 +1,4 @@
-﻿import discord
+import discord
 from discord import ui, app_commands
 import asyncio
 import json
@@ -34,7 +34,7 @@ class SystemCategory:
     MEMBER_MANAGEMENT = {"name": "👤 Member Management", "emoji": "👤", "group_key": "member_management",
                          "systems": ["verification", "welcome_leave"]}
     PROGRESSION = {"name": "💰 Progression", "emoji": "💰", "group_key": "progression",
-                   "systems": ["economy", "leveling"]}
+                   "systems": ["economy", "leveling", "shop", "gamification", "tournaments", "events"]}
     TICKETS = {"name": "🎫 Tickets", "emoji": "🎫", "group_key": "tickets",
                "systems": ["tickets"]}
     SUGGESTIONS = {"name": "💡 Suggestions", "emoji": "💡", "group_key": "suggestions",
@@ -42,15 +42,16 @@ class SystemCategory:
     GIVEAWAYS = {"name": "🎁 Giveaways", "emoji": "🎁", "group_key": "giveaways",
                  "systems": ["giveaways"]}
     COMMUNICATIONS = {"name": "📢 Communications", "emoji": "📢", "group_key": "communications",
-                      "systems": ["announcements", "reminders"]}
+                      "systems": ["announcements", "reminders", "modmail", "auto_publisher"]}
     ANTI_RAID = {"name": "🛡️ Anti-Raid", "emoji": "🛡️", "group_key": "anti_raid",
-                 "systems": ["anti_raid"]}
+                 "systems": ["anti_raid", "guardian"]}
     MODERATION = {"name": "🔨 Moderation", "emoji": "🔨", "group_key": "moderation",
-                  "systems": ["automod", "warnings"]}
+                  "systems": ["automod", "warnings", "moderation", "appeals", "logging", "mod_logging"]}
     AUTOMATION = {"name": "⚙️ Automation", "emoji": "⚙️", "group_key": "automation",
-                  "systems": ["auto_responder", "reaction_roles"]}
+                  "systems": ["auto_responder", "reaction_roles", "reaction_menus",
+                              "role_buttons", "trigger_roles", "starboard"]}
     STAFF_MANAGEMENT = {"name": "👮 Staff Management", "emoji": "👮", "group_key": "staff_management",
-                        "systems": ["staff_shifts", "staff_reviews"]}
+                        "systems": ["staff_shifts", "staff_reviews", "staff_promo", "applications"]}
 
     @classmethod
     def get_all_categories(cls):
@@ -395,13 +396,115 @@ class AutoSetupSystem:
     # Systems whose runtime module reads a different key than f"{system}_config"
     CONFIG_KEY_OVERRIDES = {
         "automod": "automod_config",
-        "auto_mod": "auto_mod_config",
+        "auto_mod": "automod_config",
         "warnings": "warning_config",
         "reaction_roles": "reaction_roles",
+        "trigger_roles": "trigger_roles",
+        "mod_logging": "mod_log_config",
+        "applications": "application_config",
+        "events": "event_settings",
+        "tournaments": "tournament_settings",
+        "ai_chat": "ai_chat_settings",
+        "content_generator": "content_settings",
+        "auto_publisher": "auto_publisher_settings",
     }
 
+    # Table-driven installers: channels/roles created + config written.
+    # Any system not listed here falls back to plain {"enabled": True}.
+    INSTALL_TABLE = {
+        "guardian": {"config_key": "guardian_config"},
+        "moderation": {"channels": ["mod-log"], "config_key": "moderation_config",
+                       "extra": {"log_channel": "{channel:mod-log}"}},
+        "appeals": None,  # has a dedicated setup_appeals on AutoSetup facade
+        "automod": {"channels": ["mod-log"], "config_key": "automod_config",
+                    "extra": {"log_channel_id": "{channel:mod-log}",
+                              "rules": {}}},
+        "starboard": {"channels": ["starboard"], "config_key": "starboard_config",
+                      "extra": {"starboard_channel": "{channel:starboard}",
+                                "star_threshold": 3}},
+        "suggestions": {"channels": ["suggestions"], "config_key": "suggestions_config",
+                        "extra": {"suggestions_channel": "{channel:suggestions}",
+                                  "staff_roles": []}},
+        "giveaways": {"channels": ["giveaways"], "config_key": "giveaways_config"},
+        "announcements": {"channels": ["announcements"], "config_key": "announcements_config",
+                          "extra": {"announcement_channel": "{channel:announcements}",
+                                    "require_approval": False}},
+        "reminders": {"config_key": "reminders_config"},
+        "auto_responder": {"config_key": "auto_responder_config"},
+        "reaction_menus": {"config_key": "reaction_menus_config"},
+        "role_buttons": {"config_key": "role_buttons_config"},
+        "trigger_roles": {"config_key": "trigger_roles"},
+        "anti_raid": {"channels": ["anti-raid-alerts"], "config_key": "anti_raid_config",
+                      "extra": {"alert_channel_id": "{channel:anti-raid-alerts}",
+                                "mass_join_threshold": 5, "mass_join_window": 60,
+                                "action": "kick"}},
+        "events": {"config_key": "event_settings", "extra": {"enabled": True}},
+        "tournaments": {"config_key": "tournament_settings"},
+        "gamification": {"config_key": "gamification_config"},
+        "shop": {"config_key": "shop_items"},
+        "modmail": {"config_key": "modmail_config"},
+        "ai_chat": {"config_key": "ai_chat_settings"},
+        "logging": {"channels": ["logs"], "config_key": "logging_config",
+                    "extra": {"log_channel": "{channel:logs}", "enabled": True}},
+        "mod_logging": {"channels": ["mod-log"], "config_key": "mod_log_config",
+                        "extra": {"channel_id": "{channel:mod-log}", "enabled": True}},
+        "staff_shifts": {"channels": ["staff-shifts"], "config_key": "staff_shifts_config",
+                         "roles": ["Staff"],
+                         "extra": {"shift_channel_id": "{channel:staff-shifts}",
+                                   "notifications_enabled": True}},
+        "staff_reviews": {"channels": ["staff-reviews"], "config_key": "staff_reviews_config",
+                          "extra": {"review_channel_id": "{channel:staff-reviews}",
+                                    "cycle": "monthly", "notifications_enabled": True}},
+        "staff_promo": {"channels": ["staff-promotions"], "config_key": "staff_promo_config",
+                        "extra": {"announcement_channel": "{channel:staff-promotions}",
+                                  "enabled": True}},
+        "welcome_dm": {"config_key": "welcome_leave_config"},
+    }
+
+    async def _get_or_create_channel(self, guild, name):
+        existing = discord.utils.get(guild.text_channels, name=name)
+        if existing:
+            return existing
+        return await guild.create_text_channel(name)
+
+    async def _install_from_table(self, guild, system, spec) -> bool:
+        """Generic real installer driven by INSTALL_TABLE entries."""
+        channels = {}
+        for name in spec.get("channels", []):
+            ch = await self._get_or_create_channel(guild, name)
+            if ch:
+                channels[name] = str(ch.id)
+        roles = {}
+        for role_name in spec.get("roles", []):
+            role = discord.utils.get(guild.roles, name=role_name)
+            if role is None:
+                try:
+                    color = discord.Color.blue()
+                    if role_name == "Staff":
+                        color = discord.Color.blue()
+                    role = await guild.create_role(name=role_name, color=color)
+                except Exception as e:
+                    logger.warning(f"Could not create role '{role_name}': {e}")
+            if role:
+                roles[role_name] = str(role.id)
+
+        config = {"enabled": True}
+        for key, value in spec.get("extra", {}).items():
+            if isinstance(value, str) and value.startswith("{channel:") and value.endswith("}"):
+                cname = value[len("{channel:"):-1]
+                value = channels.get(cname, "")
+            elif isinstance(value, str) and value.startswith("{role:") and value.endswith("}"):
+                rname = value[len("{role:"):-1]
+                value = [roles[rname]] if rname in roles else []
+            config[key] = value
+        dm.update_guild_data(guild.id, spec["config_key"], config)
+        return True
+
     async def setup_generic_system(self, guild, system, user) -> bool:
-        """Generic setup for systems without specific setup logic."""
+        """Real setup when a table entry exists; minimal config otherwise."""
+        spec = self.INSTALL_TABLE.get(system)
+        if spec:
+            return await self._install_from_table(guild, system, spec)
         try:
             config = {"enabled": True}
             key = self.CONFIG_KEY_OVERRIDES.get(system, f"{system}_config")
@@ -427,7 +530,7 @@ class AutoSetupSystem:
         ]
 
         for system in systems:
-            config_key = f"{system}_config"
+            config_key = self.CONFIG_KEY_OVERRIDES.get(system, f"{system}_config")
             if not dm.get_guild_data(guild.id, config_key):
                 dm.update_guild_data(guild.id, config_key, {"enabled": False})
 
@@ -578,7 +681,9 @@ class SetupStartView(discord.ui.View):
 
     @discord.ui.button(label="Quick Setup (Recommended)", style=discord.ButtonStyle.primary, emoji="⚡")
     async def quick_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
-        recommended = ["verification", "tickets", "economy", "leveling", "auto_mod", "welcome_leave"]
+        recommended = ["verification", "welcome_leave", "tickets", "economy", "leveling",
+                       "automod", "warnings", "moderation", "anti_raid", "auto_responder",
+                       "announcements", "reminders"]
         await self.auto_setup.start_installation(interaction, recommended)
 
 class CategorySelectView(discord.ui.View):
