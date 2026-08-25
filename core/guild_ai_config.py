@@ -11,6 +11,11 @@ from typing import Dict, List, Optional
 
 from data_manager import dm
 from logger import logger
+import os as _os
+
+# Env default is the intended server-wide depth when a guild hasn't overridden it.
+# Keeping the code default in sync avoids the "50 hides 100" bug (ai_client.py:21).
+_ENV_MEMORY_DEPTH = int(_os.getenv("MEMORY_DEPTH", "100"))
 
 
 @dataclass
@@ -27,7 +32,7 @@ class GuildAIConfig:
     agent_enabled: bool = True         # allow the AI to execute action plans
     tool_mode: str = "actions"         # actions | readonly
     safety_policy: str = "standard"    # standard | strict
-    memory_depth: int = 50             # conversation exchanges kept per user (50+ = long memory)
+    memory_depth: int = _ENV_MEMORY_DEPTH  # conversation exchanges kept per user (100 = long memory; env MEMORY_DEPTH wins when not overridden)
 
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -35,15 +40,36 @@ class GuildAIConfig:
         raw = dm.get_guild_data(guild_id, "ai_config", {})
         if not isinstance(raw, dict):
             raw = {}
+        # Migrate legacy top-level memory_depth -> ai_config.memory_depth (one-time)
+        if "memory_depth" not in raw:
+            legacy = dm.get_guild_data(guild_id, "memory_depth", None)
+            if isinstance(legacy, int) and 5 <= legacy <= 200:
+                raw["memory_depth"] = legacy
+        # If guild never set ai_config.memory_depth, fall back to env default
+        # (truthy `50` must not hide env `100` — check key presence, not truthiness).
+        if "memory_depth" not in raw:
+            raw["memory_depth"] = _ENV_MEMORY_DEPTH
         cfg = GuildAIConfig(guild_id=guild_id)
         for f in ("enabled", "provider", "model", "fallback_models", "max_tokens",
-                  "temperature", "timeout", "retry_limit", "agent_enabled",
-                  "tool_mode", "safety_policy", "memory_depth"):
+                   "temperature", "timeout", "retry_limit", "agent_enabled",
+                   "tool_mode", "safety_policy", "memory_depth"):
             if f in raw:
                 setattr(cfg, f, raw[f])
         if not isinstance(cfg.fallback_models, list):
             cfg.fallback_models = []
+        # Clamp memory_depth to sane bounds
+        try:
+            cfg.memory_depth = max(5, min(int(cfg.memory_depth), 200))
+        except Exception:
+            cfg.memory_depth = _ENV_MEMORY_DEPTH
         return cfg
+
+    def effective_memory_depth(self) -> int:
+        """Depth that will actually be injected into prompts."""
+        try:
+            return max(5, min(int(self.memory_depth), 200))
+        except Exception:
+            return _ENV_MEMORY_DEPTH
 
     def save(self):
         dm.update_guild_data(self.guild_id, "ai_config", asdict(self))

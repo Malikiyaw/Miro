@@ -34,6 +34,22 @@ class AgentHarness:
             actions=[a for a in (initial_result.get('actions') or initial_result.get('tool_calls') or []) if isinstance(a,dict)]
             if actions: safe_initial={'summary':str(initial_result.get('summary') or ''),'actions':actions}
         response,execution_result=await runtime.run(interaction,request[:2000],system_prompt or 'You are Miro Agent. Execute the user request through verified tools.',initial_result=safe_initial)
+        # FIX: execution turns were never persisted → next turn forgot prior tool context
+        try:
+            from history_manager import history_manager
+            final_text = getattr(response, 'text', '') if response else ''
+            if final_text and final_text.strip():
+                await history_manager.add_exchange(getattr(guild,'id',0), getattr(user,'id',0), request[:2000], final_text[:4000])
+            # Also persist to vector memory for semantic recall
+            try:
+                from vector_memory import vector_memory
+                import asyncio as _aio
+                # fire-and-forget with await (store_conversation is async)
+                await vector_memory.store_conversation(getattr(guild,'id',0), getattr(user,'id',0), request[:2000], final_text[:4000], importance_score=0.6)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug(f"[AGENT] history persist skipped: {e}")
         return HarnessResult(classification,response=response,execution_result=execution_result,handled=True)
 
     async def run_message(self,message,*,chat_channel=None):

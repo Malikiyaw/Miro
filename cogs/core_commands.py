@@ -293,9 +293,15 @@ class CoreCommands(commands.Cog):
 
         env_key = getattr(self.bot.ai, "default_api_key", "") if self.bot.ai else ""
         embed = discord.Embed(title="⚙️ AI Configuration", color=discord.Color.blue())
+        from core.guild_ai_config import GuildAIConfig as _GAC
+        _depth = _GAC.load(guild_id).memory_depth
+        # Migrate legacy orphaned key if ai_config.memory_depth is still default
+        legacy = dm.get_guild_data(guild_id, "memory_depth", None)
+        if legacy is not None and _depth == 50 and isinstance(legacy, int):
+            _depth = legacy
         embed.add_field(name="Active provider", value=self.providers.display(provider), inline=True)
         embed.add_field(name="Model", value=f"`{model}`", inline=True)
-        embed.add_field(name="Memory depth", value=str(dm.get_guild_data(guild_id, "memory_depth", 20)), inline=True)
+        embed.add_field(name="Memory depth", value=str(_depth), inline=True)
 
         stored = dm.get_guild_api_key(guild_id) or {}
         providers_cfg = stored.get("providers", {}) if isinstance(stored, dict) else {}
@@ -467,12 +473,41 @@ class CoreCommands(commands.Cog):
             await interaction.response.send_message("Only Administrators can change configuration.", ephemeral=True)
             return
             
-        if depth < 5 or depth > 100:
-            await interaction.response.send_message("❌ Depth must be between 5 and 100.", ephemeral=True)
+        if depth < 5 or depth > 200:
+            await interaction.response.send_message("❌ Depth must be between 5 and 200.", ephemeral=True)
             return
-            
-        dm.update_guild_data(interaction.guild.id, "memory_depth", depth)
-        await interaction.response.send_message(f"✅ Memory depth set to **{depth}**.", ephemeral=True)
+
+        from core.guild_ai_config import GuildAIConfig
+        cfg = GuildAIConfig.load(interaction.guild.id)
+        cfg.memory_depth = int(depth)
+        cfg.save()
+        # Clean up legacy orphaned key if present
+        if dm.get_guild_data(interaction.guild.id, "memory_depth", None) is not None:
+            try:
+                data = dm.load_json(f"guild_{interaction.guild.id}", default={})  # not used, guild files are via dm
+            except Exception:
+                pass
+            # Directly clear legacy key via dm by overwriting guild file raw
+            guild_data = dm.get_guild_data(interaction.guild.id, "memory_depth", None)
+            if guild_data is not None:
+                # Remove orphaned top-level key — keep ai_config as source of truth
+                try:
+                    dm.update_guild_data(interaction.guild.id, "memory_depth", None)
+                    # dm stores None as value; delete via raw JSON manipulation
+                    import json, os as _os
+                    path = _os.path.join("data", f"guild_{interaction.guild.id}.json")
+                    if _os.path.exists(path):
+                        with open(path, "r", encoding="utf-8") as f:
+                            raw = json.load(f)
+                        if "memory_depth" in raw:
+                            del raw["memory_depth"]
+                            tmp = path + ".tmp"
+                            with open(tmp, "w", encoding="utf-8") as out:
+                                json.dump(raw, out, indent=2)
+                            _os.replace(tmp, path)
+                except Exception:
+                    pass
+        await interaction.response.send_message(f"✅ Memory depth set to **{depth}** (stored in ai_config). Restart not required.", ephemeral=True)
 
     @app_commands.command(name="disable", description="Disable a bot feature or scheduled task")
     @app_commands.describe(feature="Feature or task to disable")

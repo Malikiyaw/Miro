@@ -128,19 +128,44 @@ class AIClient:
         model=model_override or dm.get_guild_data(guild_id,'custom_model',self.model) or self.model
         if not AIProviderRegistry.is_chat_model(model): model=AIProviderRegistry().default_model(provider)
         messages=[{'role':'system','content':system_prompt}]
-        # ---- LONG-CONVERSATION MEMORY (50+ exchanges) ----
-        # Per-guild ai_config.memory_depth wins, then MEMORY_DEPTH env, then 50.
+        # ---- LONG-CONVERSATION MEMORY (100 exchanges default, env MEMORY_DEPTH wins when not overridden) ----
+        # Fix: check key presence, not truthiness, so GuildAIConfig default doesn't hide MEMORY_DEPTH=100.
         try:
             from core.guild_ai_config import GuildAIConfig
-            depth=int(GuildAIConfig.load(guild_id).memory_depth or MEMORY_DEPTH_DEFAULT)
+            cfg = GuildAIConfig.load(guild_id)
+            # effective_memory_depth() already clamps and falls back to env
+            depth = int(cfg.effective_memory_depth()) if hasattr(cfg, "effective_memory_depth") else int(getattr(cfg, "memory_depth", MEMORY_DEPTH_DEFAULT) or MEMORY_DEPTH_DEFAULT)
         except Exception:
             depth=MEMORY_DEPTH_DEFAULT
-        depth=max(10,min(depth,200))
+        depth=max(5,min(depth,200))
         try:
             history=await history_manager.get_enhanced_context(guild_id,user_id,depth=depth)
             if history:
-                messages.extend(history[-depth*2:])
+                # Preserve the leading system summary even when history > depth*2
+                if history and history[0].get("role") == "system" and len(history) > depth*2 + 1:
+                    # Keep system summary + last depth*2 verbatim messages
+                    history = [history[0]] + history[-(depth*2):]
+                    messages.extend(history)
+                else:
+                    messages.extend(history[-(depth*2+1):] if history and history[0].get("role")=="system" else history[-depth*2:])
                 logger.debug(f"[AI {guild_id}/{user_id}] injected {len(history)} history messages (depth={depth})")
+
+            # ---- SEMANTIC LONG-TERM MEMORY (vector store) ----
+            # Previously write-only; now retrieved and injected as a second system block.
+            try:
+                n_vec = int(os.getenv("VECTOR_MEMORY_RESULTS", "5"))
+                if n_vec > 0 and user_input and len(user_input.strip()) >= 3:
+                    vec_hits = await vector_memory.retrieve_relevant_conversations(guild_id, user_id, str(user_input)[:1000], n_results=n_vec)
+                    if vec_hits:
+                        vec_lines = []
+                        for h in vec_hits[:n_vec]:
+                            doc = (h.get("document") or "")[:600].strip()
+                            if doc:
+                                vec_lines.append(f"- {doc}")
+                        if vec_lines:
+                            messages.insert(1, {"role": "system", "content": "Relevant past memories (semantic search):\n" + "\n".join(vec_lines)})
+            except Exception as ve:
+                logger.debug(f"vector memory injection skipped: {ve}")
         except Exception as e:
             logger.warning(f"history context unavailable: {e}")
         if extra_messages:

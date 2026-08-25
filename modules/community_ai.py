@@ -228,12 +228,16 @@ Ensure no trailing commas, comments, or text outside JSON. Lines under 1500 char
             }
         
         session = self._channel_sessions[session_key]
-        
-        history = history_manager.get_enhanced_context(
-            message.guild.id,
-            message.author.id,
-            depth=chat_channel.memory_depth
-        )
+
+        # FIX: was missing `await` — coroutine was never resolved, history never used
+        try:
+            history = await history_manager.get_enhanced_context(
+                message.guild.id,
+                message.author.id,
+                depth=chat_channel.memory_depth
+            )
+        except Exception:
+            history = []
         
         if chat_channel.mode == ChannelMode.RPG:
             rpg_context = await self._get_rpg_context(message.guild.id)
@@ -315,15 +319,19 @@ Ensure no trailing commas, comments, or text outside JSON. Lines under 1500 char
             if len(session["messages"]) > 50:
                 session["messages"] = session["messages"][-50:]
 
-            vector_memory.store_conversation(
-                guild_id=message.guild.id,
-                user_id=message.author.id,
-                user_message=user_input,
-                bot_response=summary,
-                reasoning=reasoning,
-                walkthrough=result.get("walkthrough", ""),
-                importance_score=0.5
-            )
+            # FIX: was missing `await` — coroutine never executed, vector memory never written
+            try:
+                await vector_memory.store_conversation(
+                    guild_id=message.guild.id,
+                    user_id=message.author.id,
+                    user_message=user_input,
+                    bot_response=summary,
+                    reasoning=reasoning,
+                    walkthrough=result.get("walkthrough", ""),
+                    importance_score=0.5
+                )
+            except Exception as ve:
+                logger.debug(f"vector store failed: {ve}")
 
             if len(summary) > 2000:
                 summary = summary[:1997] + "..."
