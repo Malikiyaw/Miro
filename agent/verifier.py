@@ -142,6 +142,72 @@ class Verifier:
                 except Exception:
                     return True  # cannot inspect bans; trust handler success
 
+            # Automation & custom-command tools verify against persisted
+            # guild state (the automations / custom_commands registries).
+            if name in ("create_automation", "update_automation", "resume_automation",
+                        "run_automation_now", "bulk_create_automations"):
+                from data_manager import dm as _dm
+                autos = _dm.get_guild_data(guild.id, "automations", {}) or {}
+                wanted = params.get("name") or params.get("automation_name")
+                if name == "bulk_create_automations":
+                    items = params.get("automations") or params.get("items") or []
+                    if not isinstance(items, list) or not items:
+                        return False
+                    lowered = {str(k).lower() for k in autos}
+                    return all(str((it or {}).get("name", "")).lower() in lowered
+                               for it in items if isinstance(it, dict))
+                if not wanted:
+                    return False
+                entry = autos.get(wanted) or next(
+                    (e for k, e in autos.items() if str(k).lower() == str(wanted).lower()), None)
+                return isinstance(entry, dict) and not entry.get("paused")
+
+            if name in ("pause_automation", "bulk_pause_automations"):
+                from data_manager import dm as _dm
+                autos = _dm.get_guild_data(guild.id, "automations", {}) or {}
+                if name == "bulk_pause_automations":
+                    names = params.get("names")
+                    if names:
+                        lowered = {str(k).lower() for k, e in autos.items()
+                                   if isinstance(e, dict) and e.get("paused")}
+                        return all(str(n).lower() in lowered for n in names)
+                    return all(isinstance(e, dict) and (e.get("paused") or params.get("type") and e.get("type") != params.get("type"))
+                               for e in autos.values()) if autos else False
+                wanted = params.get("name") or params.get("automation_name")
+                if not wanted:
+                    return False
+                entry = autos.get(wanted) or next(
+                    (e for k, e in autos.items() if str(k).lower() == str(wanted).lower()), None)
+                return isinstance(entry, dict) and bool(entry.get("paused"))
+
+            if name == "bulk_delete_automations":
+                from data_manager import dm as _dm
+                autos = _dm.get_guild_data(guild.id, "automations", {}) or {}
+                names = params.get("names")
+                if names:
+                    lowered = {str(k).lower() for k in autos}
+                    return all(str(n).lower() not in lowered for n in names)
+                atype = params.get("type")
+                return not any(isinstance(e, dict) and (not atype or e.get("type") == atype)
+                               for e in autos.values())
+
+            if name in ("create_prefix_command", "bulk_create_prefix_commands",
+                        "delete_prefix_command"):
+                from data_manager import dm as _dm
+                cmds = _dm.get_guild_data(guild.id, "custom_commands", {}) or {}
+                if name == "bulk_create_prefix_commands":
+                    items = params.get("commands") or params.get("items") or []
+                    if not isinstance(items, list) or not items:
+                        return False
+                    lowered = {str(k).lower() for k in cmds}
+                    return all(str((it or {}).get("name", "")).lstrip("!").lower() in lowered
+                               for it in items if isinstance(it, dict))
+                wanted = str(params.get("name") or params.get("cmd_name") or "").lstrip("!").lower()
+                if not wanted:
+                    return False
+                exists = wanted in {str(k).lower() for k in cmds}
+                return exists if name != "delete_prefix_command" else not exists
+
             # V8 fail-closed rule: a mutation without a concrete verifier is not
             # allowed to become VERIFIED merely because Discord returned success.
             return False

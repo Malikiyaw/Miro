@@ -13,7 +13,9 @@ def provider_tool_schemas():
             typ=rule.get("type","string")
             if typ not in {"string","integer","number","boolean","array","object"}: typ="string"
             prop={"type":typ}
-            if typ=="array": prop["items"]={"type":"integer"}
+            if typ=="array":
+                item_type=rule.get("items","string")
+                prop["items"]={"type": item_type if item_type in {"string","integer","number","boolean","object","array"} else "string"}
             props[key]=prop
             if rule.get("required"): required.append(key)
         schemas.append({"type":"function","function":{"name":name,"description":spec.get("description","")[:500],"parameters":{"type":"object","properties":props,"required":required,"additionalProperties":False}}})

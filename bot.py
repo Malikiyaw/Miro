@@ -503,6 +503,8 @@ class MiroBot(commands.Bot):
                 try:
                     if not isinstance(entry, dict) or entry.get("type") != "scheduled_task":
                         continue
+                    if entry.get("paused"):
+                        continue
                     cron = entry.get("cron")
                     sched_handler = entry.get("handler")
                     if not cron or not sched_handler:

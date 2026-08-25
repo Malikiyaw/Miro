@@ -122,6 +122,77 @@ class ToolRegistry:
 
 tool_registry = ToolRegistry()
 
+
+# --------------------------------------------------------------------------- #
+# Automation scale layer (1000x): lifecycle + bulk tools                      #
+# --------------------------------------------------------------------------- #
+
+TOOL_SPECS["update_automation"] = _spec(
+    "update_automation",
+    "Update an existing automation: change its cron/schedule, action handler, response text, or target channel. Use cron like '*/15 * * * *', or schedule {'every_minutes': 15} / {'every_hours': 2} / {'daily_at': '09:00'}.",
+    {"name": {"type": "string", "required": True},
+     "cron": {"type": "string", "required": False},
+     "schedule": {"type": "object", "required": False},
+     "action": {"type": "object", "required": False},
+     "response": {"type": "string", "required": False},
+     "channel_id": {"type": "string", "required": False}},
+    permission="administrator", danger="low", verifier="automation_exists")
+
+TOOL_SPECS["pause_automation"] = _spec(
+    "pause_automation",
+    "Pause an automation without deleting it (its cron schedule stops firing).",
+    {"name": {"type": "string", "required": True}},
+    permission="administrator", danger="low", verifier="automation_paused")
+
+TOOL_SPECS["resume_automation"] = _spec(
+    "resume_automation",
+    "Resume a paused automation and re-schedule it.",
+    {"name": {"type": "string", "required": True}},
+    permission="administrator", danger="low", verifier="automation_exists")
+
+TOOL_SPECS["run_automation_now"] = _spec(
+    "run_automation_now",
+    "Test-fire an automation immediately without waiting for its schedule. Reports success/failure.",
+    {"name": {"type": "string", "required": True}},
+    permission="administrator", danger="medium", verifier="automation_exists")
+
+TOOL_SPECS["bulk_create_automations"] = _spec(
+    "bulk_create_automations",
+    "Create up to 25 automations in ONE call. Pass 'automations': [ {...create_automation params...}, ... ]. Prefer this over repeated create_automation calls when the user wants several schedules/responders at once.",
+    {"automations": {"type": "array", "required": True, "items": "object"}},
+    permission="administrator", danger="medium", verifier="automation_exists", retries=1)
+
+TOOL_SPECS["bulk_pause_automations"] = _spec(
+    "bulk_pause_automations",
+    "Pause many automations at once: by 'names': [...] or 'all': true (optionally filtered by 'type': scheduled_task/auto_responder/reminder).",
+    {"names": {"type": "array", "required": False, "items": "string"},
+     "all": {"type": "boolean", "required": False},
+     "type": {"type": "string", "required": False}},
+    permission="administrator", danger="medium", verifier="automation_paused")
+
+TOOL_SPECS["bulk_delete_automations"] = _spec(
+    "bulk_delete_automations",
+    "Delete many automations at once: by 'names': [...] or 'all': true (optionally filtered by 'type'). DANGEROUS - confirm with the user first.",
+    {"names": {"type": "array", "required": False, "items": "string"},
+     "all": {"type": "boolean", "required": False},
+     "type": {"type": "string", "required": False}},
+    permission="administrator", danger="high", verifier="automation_gone")
+
+TOOL_SPECS["bulk_create_prefix_commands"] = _spec(
+    "bulk_create_prefix_commands",
+    "Create up to 25 custom !commands in ONE call. Pass 'commands': [ {'name': 'rules', 'code': 'response text', 'aliases': [...], 'cooldown_seconds': 5, 'required_permission': 'everyone|mod|admin', 'description': '...'}, ... ].",
+    {"commands": {"type": "array", "required": True, "items": "object"}},
+    permission="administrator", danger="low", verifier="command_exists", retries=1)
+
+# Enrich the existing single-item tools with the new capabilities
+if "create_prefix_command" in TOOL_SPECS:
+    _params = TOOL_SPECS["create_prefix_command"].setdefault("parameters", {})
+    _params.setdefault("aliases", {"type": "array", "required": False, "items": "string"})
+    _params.setdefault("cooldown_seconds", {"type": "integer", "required": False})
+    _params.setdefault("required_permission", {"type": "string", "required": False})
+    _params.setdefault("description", {"type": "string", "required": False})
+
+
 def ensure_full_catalog(allowed_names) -> int:
     """Generate TOOL_SPECS for every allowed action lacking one."""
     from core.action_meta import _infer_action_meta

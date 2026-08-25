@@ -7,6 +7,7 @@ import difflib
 from datetime import datetime, timezone
 import datetime as dt
 from typing import List, Dict, Any, Tuple, Optional
+from modules.automation_manager import check_command_permission
 from data_manager import dm
 from logger import logger
 from core.audit import SOURCE_AI, SOURCE_COMMAND
@@ -282,7 +283,11 @@ class ActionHandler:
         # Automation actions — LIVE
         "create_automation", "delete_automation", "list_automations",
         "delete_prefix_command", "list_prefix_commands"
-    }
+            "create_automation", "delete_automation", "list_automations",
+        "update_automation", "pause_automation", "resume_automation", "run_automation_now",
+        "bulk_create_automations", "bulk_pause_automations", "bulk_delete_automations",
+        "bulk_create_prefix_commands", "list_prefix_commands",
+}
 
     @classmethod
     def get_commands_for_system(cls, system: str) -> list:
@@ -718,6 +723,272 @@ class ActionHandler:
                 if candidate.lower() == matches[0]:
                     return candidate
         return None
+
+    # ------------------------------------------------------------------ #
+    # Automation scale layer (delegates to modules/automation_manager)    #
+    # ------------------------------------------------------------------ #
+
+    def _am(self):
+        from modules.automation_manager import (check_quota, get_automations,
+                                                save_automations, find_automation,
+                                                record_run, interval_to_cron,
+                                                MAX_BULK_ITEMS)
+        return check_quota, get_automations, save_automations, find_automation, record_run, interval_to_cron, MAX_BULK_ITEMS
+
+    async def action_update_automation(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        """Update an existing automation: cron/schedule, action, channel, or rename."""
+        check_quota, get_automations, save_automations, find_automation, record_run, interval_to_cron, _ = self._am()
+        guild_id = interaction.guild.id
+        name = str(params.get("name") or params.get("automation_name") or "").strip()
+        if not name:
+            return False, {"error": "update_automation requires 'name'."}
+        key, entry = find_automation(guild_id, name)
+        if entry is None:
+            return False, {"error": f"Automation '{name}' not found."}
+        changed = []
+        autos = get_automations(guild_id)
+        new_schedule = params.get("schedule") if isinstance(params.get("schedule"), dict) else {}
+        new_cron = str(params.get("cron") or new_schedule.get("cron") or "").strip()
+        if not new_cron and new_schedule:
+            new_cron = interval_to_cron(new_schedule) or ""
+        if new_cron:
+            entry["cron"] = new_cron
+            changed.append(f"cron={new_cron}")
+        new_action = params.get("action")
+        if isinstance(new_action, dict):
+            handler_name = str(new_action.get("name") or new_action.get("handler") or "").strip()
+            if handler_name:
+                entry["handler"] = handler_name
+                changed.append(f"handler={handler_name}")
+            if isinstance(new_action.get("parameters"), dict):
+                entry["params"] = self._normalize_scheduled_params(handler_name, new_action["parameters"], entry.get("channel_id"))
+                changed.append("params updated")
+        if params.get("response") is not None:
+            entry["params"] = dict(entry.get("params") or {})
+            entry["params"]["content"] = str(params["response"])[:2000]
+            changed.append("response updated")
+        new_channel = params.get("channel_id")
+        if new_channel and str(new_channel).isdigit():
+            entry["channel_id"] = str(new_channel)
+            entry["params"] = dict(entry.get("params") or {})
+            entry["params"]["channel_id"] = str(new_channel)
+            changed.append("channel updated")
+        # Reschedule if cron/handler changed and it is an active scheduled task
+        if entry.get("type") == "scheduled_task" and ("cron" in " ".join(changed) or any("handler" in c for c in changed)):
+            try:
+                from task_scheduler import task_scheduler
+                old_tid = entry.get("task_id")
+                if old_tid:
+                    task_scheduler.cancel_task(old_tid)
+                if not entry.get("paused"):
+                    tid, nxt = self._schedule_cron_job(guild_id, key, entry["cron"],
+                                                       entry.get("handler", "send_message"),
+                                                       entry.get("params") or {},
+                                                       entry.get("channel_id"))
+                    if tid:
+                        entry["task_id"] = tid
+                        entry["next_run"] = nxt
+                    else:
+                        return False, {"error": f"Reschedule failed: {nxt}"}
+            except Exception as e:
+                return False, {"error": f"Reschedule failed: {e}"}
+        autos[key] = entry
+        save_automations(guild_id, autos)
+        return True, {"automation": key, "changed": changed or ["nothing to change"]}
+
+    async def action_pause_automation(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        """Pause an automation without deleting it."""
+        _, get_automations, save_automations, find_automation, _, _, _ = self._am()
+        guild_id = interaction.guild.id
+        name = str(params.get("name") or params.get("automation_name") or "").strip()
+        key, entry = find_automation(guild_id, name)
+        if entry is None:
+            return False, {"error": f"Automation '{name}' not found."}
+        autos = get_automations(guild_id)
+        entry["paused"] = True
+        entry["paused_reason"] = "paused by admin/agent"
+        try:
+            from task_scheduler import task_scheduler
+            if entry.get("task_id"):
+                task_scheduler.cancel_task(entry["task_id"])
+        except Exception:
+            pass
+        autos[key] = entry
+        save_automations(guild_id, autos)
+        return True, {"automation": key, "paused": True}
+
+    async def action_resume_automation(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        """Resume a paused automation (re-schedules cron tasks)."""
+        _, get_automations, save_automations, find_automation, _, _, _ = self._am()
+        guild_id = interaction.guild.id
+        name = str(params.get("name") or params.get("automation_name") or "").strip()
+        key, entry = find_automation(guild_id, name)
+        if entry is None:
+            return False, {"error": f"Automation '{name}' not found."}
+        entry["paused"] = False
+        entry["paused_reason"] = ""
+        entry["fail_count"] = 0
+        if entry.get("type") == "scheduled_task":
+            tid, nxt = self._schedule_cron_job(guild_id, key, entry["cron"],
+                                               entry.get("handler", "send_message"),
+                                               entry.get("params") or {},
+                                               entry.get("channel_id"))
+            if tid:
+                entry["task_id"] = tid
+                entry["next_run"] = nxt
+            else:
+                entry["paused"] = True
+                entry["paused_reason"] = f"resume failed: {nxt}"
+                autos = get_automations(guild_id)
+                autos[key] = entry
+                save_automations(guild_id, autos)
+                return False, {"error": f"Resume failed: {nxt}"}
+        autos = get_automations(guild_id)
+        autos[key] = entry
+        save_automations(guild_id, autos)
+        return True, {"automation": key, "paused": False, "next_run": entry.get("next_run")}
+
+    async def action_run_automation_now(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        """Test-fire an automation immediately without waiting for its schedule."""
+        _, get_automations, _, find_automation, record_run, _, _ = self._am()
+        guild_id = interaction.guild.id
+        name = str(params.get("name") or params.get("automation_name") or "").strip()
+        key, entry = find_automation(guild_id, name)
+        if entry is None:
+            return False, {"error": f"Automation '{name}' not found."}
+        from actions import ScheduledTaskInteraction  # self-reference safe (same module)
+        mock = ScheduledTaskInteraction(self.bot, guild_id)
+        cid = (entry.get("params") or {}).get("channel_id") or entry.get("channel_id")
+        if cid:
+            try:
+                ch = self.bot.get_channel(int(str(cid)))
+                if ch is not None:
+                    mock.channel = ch
+            except (TypeError, ValueError):
+                pass
+        try:
+            ok, info = await self.dispatch(mock, entry.get("handler", "send_message"),
+                                           dict(entry.get("params") or {}))
+            updated = record_run(guild_id, key, bool(ok),
+                                 str((info or {}).get("error", "")) if isinstance(info, dict) else "")
+            return bool(ok), {"automation": key, "ran": True,
+                              "fail_count": updated.get("fail_count", 0),
+                              "error": (info or {}).get("error") if isinstance(info, dict) else None}
+        except Exception as e:
+            record_run(guild_id, key, False, str(e))
+            return False, {"error": f"Test run failed: {e}"}
+
+    async def action_bulk_create_automations(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        """Create many automations in one call (up to 25). Params: automations: [ {..create params..} ]."""
+        _, _, _, _, _, _, max_bulk = self._am()
+        items = params.get("automations") or params.get("items") or params.get("list")
+        if not isinstance(items, list) or not items:
+            return False, {"error": "bulk_create_automations requires 'automations': [ ... ] (list of create_automation param objects)."}
+        if len(items) > max_bulk:
+            return False, {"error": f"Too many items ({len(items)}). Max {max_bulk} per call."}
+        results = []
+        created = 0
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                results.append({"index": idx, "ok": False, "error": "item must be an object"})
+                continue
+            try:
+                ok, info = await self.action_create_automation(interaction, item)
+                created += 1 if ok else 0
+                results.append({"index": idx, "name": item.get("name"), "ok": bool(ok),
+                                "error": (info or {}).get("error") if isinstance(info, dict) and not ok else None})
+            except Exception as e:
+                results.append({"index": idx, "name": item.get("name"), "ok": False, "error": str(e)[:200]})
+        return created > 0, {"created": created, "requested": len(items), "results": results}
+
+    async def action_bulk_pause_automations(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        """Pause many automations: by names list, or all of a type, or all."""
+        _, get_automations, save_automations, _, _, _, _ = self._am()
+        guild_id = interaction.guild.id
+        autos = get_automations(guild_id)
+        names = params.get("names")
+        atype = params.get("type")
+        if names:
+            targets = []
+            for n in names:
+                key, _ = (n, autos.get(n)) if n in autos else (
+                    next((k for k in autos if str(k).lower() == str(n).strip().lower()), None) and (next((k for k in autos if str(k).lower() == str(n).strip().lower()), None), None) or (None, None))
+                if key:
+                    targets.append(key)
+        elif params.get("all"):
+            targets = [k for k, e in autos.items() if isinstance(e, dict) and not e.get("paused")
+                       and (not atype or e.get("type") == atype)]
+        else:
+            return False, {"error": "Provide 'names': [...] or 'all': true (optionally with 'type')."}
+        paused = 0
+        for k in targets:
+            autos[k]["paused"] = True
+            autos[k]["paused_reason"] = "bulk pause"
+            try:
+                from task_scheduler import task_scheduler
+                if autos[k].get("task_id"):
+                    task_scheduler.cancel_task(autos[k]["task_id"])
+            except Exception:
+                pass
+            paused += 1
+        save_automations(guild_id, autos)
+        return paused > 0, {"paused": paused, "names": targets[:25]}
+
+    async def action_bulk_delete_automations(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        """Delete many automations: by names list, or all of a type, or all."""
+        _, get_automations, save_automations, _, _, _, _ = self._am()
+        guild_id = interaction.guild.id
+        autos = get_automations(guild_id)
+        names = params.get("names")
+        atype = params.get("type")
+        if names:
+            targets = []
+            for n in names:
+                key = n if n in autos else next(
+                    (k for k in autos if str(k).lower() == str(n).strip().lower()), None)
+                if key:
+                    targets.append(key)
+        elif params.get("all"):
+            targets = [k for k, e in autos.items() if isinstance(e, dict)
+                       and (not atype or e.get("type") == atype)]
+        else:
+            return False, {"error": "Provide 'names': [...] or 'all': true (optionally with 'type')."}
+        deleted = 0
+        for k in targets:
+            entry = autos.pop(k, None)
+            if entry:
+                try:
+                    from task_scheduler import task_scheduler
+                    if entry.get("task_id"):
+                        task_scheduler.cancel_task(entry["task_id"])
+                except Exception:
+                    pass
+                deleted += 1
+        save_automations(guild_id, autos)
+        return deleted > 0, {"deleted": deleted, "names": targets[:25]}
+
+    async def action_bulk_create_prefix_commands(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
+        """Create many custom prefix commands in one call (up to 25)."""
+        _, _, _, _, _, _, max_bulk = self._am()
+        items = params.get("commands") or params.get("items") or params.get("list")
+        if not isinstance(items, list) or not items:
+            return False, {"error": "bulk_create_prefix_commands requires 'commands': [ ... ]."}
+        if len(items) > max_bulk:
+            return False, {"error": f"Too many items ({len(items)}). Max {max_bulk} per call."}
+        results = []
+        created = 0
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                results.append({"index": idx, "ok": False, "error": "item must be an object"})
+                continue
+            try:
+                ok, info = await self.action_create_prefix_command(interaction, item)
+                created += 1 if ok else 0
+                results.append({"index": idx, "name": item.get("name"), "ok": bool(ok),
+                                "error": (info or {}).get("error") if isinstance(info, dict) and not ok else None})
+            except Exception as e:
+                results.append({"index": idx, "name": item.get("name"), "ok": False, "error": str(e)[:200]})
+        return created > 0, {"created": created, "requested": len(items), "results": results}
 
     async def dispatch(self, interaction: discord.Interaction, name: str, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
         """Routes action names to specific methods with permission enforcement. Returns (success, undo_data)."""
@@ -1739,12 +2010,32 @@ class ActionHandler:
         except Exception:
             stored = json.dumps({"command_type": "simple", "content": str(cmd_code)})
 
+        # Quota guard (generous: 100 commands per guild)
+        from modules.automation_manager import check_quota, normalize_command_entry
+        if existing is None:
+            quota_ok, quota_err = check_quota(guild_id, "command")
+            if not quota_ok:
+                return False, {"error": quota_err}
+
+        # Enhanced metadata: aliases, per-command cooldown, permission, description
+        stored, norm_err = normalize_command_entry(
+            norm_name, stored,
+            aliases=self._get_param(params, "aliases", default=None),
+            cooldown_seconds=self._get_param(params, "cooldown_seconds", "cooldown", default=None),
+            permission=self._get_param(params, "required_permission", "permission", default=None),
+            description=self._get_param(params, "description", default=None))
+
         cmds = dm.get_guild_data(guild_id, "custom_commands", {})
         existing = cmds.get(norm_name)
         cmds[norm_name] = stored
-        # Keep original-case alias if different for display purposes
-        if raw_name.lower() != norm_name and raw_name.lstrip("!#").strip():
-            pass
+        # Register aliases as first-class keys pointing at the same code
+        try:
+            alias_list = json.loads(stored).get("aliases") or []
+        except Exception:
+            alias_list = []
+        for alias in alias_list:
+            if alias and alias != norm_name and alias not in cmds:
+                cmds[alias] = stored
         dm.update_guild_data(guild_id, "custom_commands", cmds)
 
         # Log to analytics
@@ -2532,11 +2823,35 @@ class ActionHandler:
                             mock.channel = ch
                     except (TypeError, ValueError):
                         pass
+                # Skip paused automations (paused via panel/agent/auto-pause)
+                try:
+                    from modules.automation_manager import get_automations as _ga, record_run as _rr
+                    _entry = _ga(_gid).get(_name)
+                    if isinstance(_entry, dict) and _entry.get("paused"):
+                        logger.info(f"Scheduled task '{_name}' fired but is paused; skipping")
+                        return
+                except Exception:
+                    pass
                 # Merge live params copy
-                await self.dispatch(mock, _handler, dict(_params))
-                # Schedule next occurrence
+                try:
+                    await self.dispatch(mock, _handler, dict(_params))
+                    try:
+                        _rr(_gid, _name, True)
+                    except Exception:
+                        pass
+                except Exception as _run_exc:
+                    try:
+                        _rr(_gid, _name, False, str(_run_exc))
+                    except Exception:
+                        pass
+                    raise
+                # Schedule next occurrence (unless auto-pause kicked in)
                 try:
                     from croniter import croniter as _ci
+                    _still = dm.get_guild_data(_gid, "automations", {}) or {}
+                    if isinstance(_still.get(_name), dict) and _still[_name].get("paused"):
+                        logger.info(f"Automation '{_name}' paused after run; not rescheduling")
+                        return
                     nxt2 = _ci(_cron, datetime.now()).get_next(float)
                     task_scheduler.schedule_task(nxt2, _run_and_reschedule)
                     # Update automations next_run for observability
@@ -2616,7 +2931,16 @@ class ActionHandler:
                     trigger = {}
                 if not isinstance(action_to_perform, dict):
                     action_to_perform = {}
-                cron = str(schedule.get("cron") or params.get("cron") or "0 12 * * *").strip()
+                # Interval schedules: {"every_minutes": N} / {"every_hours": H} /
+                # {"daily_at": "HH:MM"} / {"weekly_on": "mon", "at": "HH:MM"}
+                from modules.automation_manager import interval_to_cron, check_quota, MAX_AUTOMATIONS_PER_GUILD
+                quota_ok, quota_err = check_quota(guild_id, "automation")
+                if not quota_ok:
+                    return False, {"error": quota_err}
+                interval_cron = interval_to_cron(schedule) or interval_to_cron(
+                    {"every_minutes": params.get("every_minutes"), "every_hours": params.get("every_hours"),
+                     "daily_at": params.get("daily_at")})
+                cron = str(schedule.get("cron") or params.get("cron") or interval_cron or "0 12 * * *").strip()
                 channel_id = trigger.get("channel_id") if isinstance(trigger, dict) else None
                 if channel_id is None:
                     channel_id = params.get("channel_id")
@@ -5120,10 +5444,26 @@ class ActionHandler:
         if cmd_name != "unknown" and full_content.startswith(f"{prefix}{cmd_name} "):
             args_str = full_content[len(prefix) + len(cmd_name) + 1:].strip()
 
+        # Per-command permission gate (stored 'permission' metadata)
+        _early = None
+        try:
+            _early = json.loads(code) if isinstance(code, str) else (code if isinstance(code, dict) else None)
+        except Exception:
+            _early = None
+        if isinstance(_early, dict) and not check_command_permission(message, _early):
+            await message.channel.send(
+                "\u274c You do not have permission to use this command.", delete_after=5)
+            return None
         cooldown_key = (guild_id, user_id, cmd_name)
         now = time.time()
-        if cooldown_key in self._custom_cmd_cooldowns:
-            remaining = self._custom_cmd_cooldown_seconds - (now - self._custom_cmd_cooldowns[cooldown_key])
+        _cooldown = self._custom_cmd_cooldown_seconds
+        if isinstance(_early, dict):
+            try:
+                _cooldown = max(0, int(_early.get("cooldown", _cooldown)))
+            except (TypeError, ValueError):
+                pass
+        if _cooldown > 0 and cooldown_key in self._custom_cmd_cooldowns:
+            remaining = _cooldown - (now - self._custom_cmd_cooldowns[cooldown_key])
             if remaining > 0:
                 await message.channel.send(f"⏳ Command on cooldown. Wait {int(remaining)}s.", delete_after=2)
                 return None

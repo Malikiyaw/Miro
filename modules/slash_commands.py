@@ -274,6 +274,21 @@ class SlashCommands(commands.Cog):
             else:
                 await interaction.channel.send(chunk)
 
+    # Automation manager (admin, ephemeral)
+    @app_commands.command(name="automations", description="Manage AI-created automations (pause/resume/test/delete)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def automations(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("This command only works in servers.", ephemeral=True)
+        from modules.automation_manager import AutomationManagerView
+        view = AutomationManagerView(self.bot, interaction.user.id, interaction.guild.id)
+        embed = view.build_embed()
+        if not view._names():
+            return await interaction.response.send_message(
+                "ℹ️ No automations yet. Ask the AI: `/bot create an automation that posts daily stats at 9am`",
+                ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
 # Economy commands
     @app_commands.command(name="balance", description="Check your coin balance")
     async def balance(self, interaction: discord.Interaction):

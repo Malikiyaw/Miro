@@ -1,5 +1,6 @@
 """
-Strict action/object model + semantic validation + protected targets.
+St
+rict action/object model + semantic validation + protected targets.
 
 The agent may never confuse object types: 'bulk_delete_messages' can never
 satisfy 'delete duplicate CHANNELS'. Validation happens BEFORE dispatch, and
@@ -136,7 +137,31 @@ ACTION_META: Dict[str, Dict[str, Any]] = {
                               "verify": "none"},
     "create_automation":     {"object_type": "server", "operation": "create", "danger": "low",
                               "permission": "administrator", "batch": False, "confirm": False,
-                              "verify": "none"},
+                              "verify": "automation_exists"},
+    "update_automation":      {"object_type": "server", "operation": "update", "danger": "low",
+                              "permission": "administrator", "batch": False, "confirm": False,
+                              "verify": "automation_exists"},
+    "pause_automation":       {"object_type": "server", "operation": "update", "danger": "low",
+                              "permission": "administrator", "batch": False, "confirm": False,
+                              "verify": "automation_paused"},
+    "resume_automation":      {"object_type": "server", "operation": "update", "danger": "low",
+                              "permission": "administrator", "batch": False, "confirm": False,
+                              "verify": "automation_exists"},
+    "run_automation_now":     {"object_type": "server", "operation": "execute", "danger": "medium",
+                              "permission": "administrator", "batch": False, "confirm": False,
+                              "verify": "automation_exists"},
+    "bulk_create_automations": {"object_type": "server", "operation": "create", "danger": "medium",
+                              "permission": "administrator", "batch": True, "confirm": False,
+                              "verify": "automation_exists"},
+    "bulk_pause_automations":  {"object_type": "server", "operation": "update", "danger": "medium",
+                              "permission": "administrator", "batch": True, "confirm": False,
+                              "verify": "automation_paused"},
+    "bulk_delete_automations": {"object_type": "server", "operation": "delete", "danger": "high",
+                              "permission": "administrator", "batch": True, "confirm": True,
+                              "verify": "automation_gone"},
+    "bulk_create_prefix_commands": {"object_type": "server", "operation": "create", "danger": "low",
+                              "permission": "administrator", "batch": True, "confirm": False,
+                              "verify": "command_exists"},
     "delete_automation":     {"object_type": "server", "operation": "delete", "danger": "medium",
                               "permission": "administrator", "batch": False, "confirm": False,
                               "verify": "none"},
