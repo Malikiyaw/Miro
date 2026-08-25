@@ -61,15 +61,20 @@ TOOL_SPECS: Dict[str, Dict[str, Any]] = {
         permission="none", danger="none"),
     "create_automation": _spec(
         "create_automation",
-        "Create a LIVE automation. type='scheduled_task' runs an action on a cron schedule (pass cron). type='auto_responder' replies when keywords appear (pass keywords list + response). type='reminder' sends a message after duration seconds (pass response). All fire for real — no restart needed.",
+        "Create a LIVE automation that runs for real. Types: scheduled_task (cron/schedule + channel + response), auto_responder (keywords + response), reminder (duration sec + response), trigger_role (keywords + role_id/role_name + response). Prefer schedule:{every_minutes:15}|{every_hours:2}|{daily_at:'09:00'}|{weekly_on:'Mon',at:'08:00'} over raw cron. 'here' = current channel (resolve via query_channels). All fire live, survive restarts.",
         {"type": {"type": "string", "required": True},
          "name": {"type": "string", "required": True},
          "response": {"type": "string", "required": False},
          "cron": {"type": "string", "required": False},
+         "schedule": {"type": "object", "required": False},
          "duration": {"type": "integer", "required": False},
          "keywords": {"type": "array", "required": False},
          "action_type": {"type": "string", "required": False},
-         "channel_id": {"type": "integer", "required": False}},
+         "channel_id": {"type": "integer", "required": False},
+         "channel_name": {"type": "string", "required": False},
+         "role_id": {"type": "integer", "required": False},
+         "role_name": {"type": "string", "required": False},
+         "timezone": {"type": "string", "required": False}},
         permission="administrator", danger="low"),
     "delete_automation": _spec(
         "delete_automation",
@@ -158,7 +163,7 @@ TOOL_SPECS["run_automation_now"] = _spec(
 
 TOOL_SPECS["bulk_create_automations"] = _spec(
     "bulk_create_automations",
-    "Create up to 25 automations in ONE call. Pass 'automations': [ {...create_automation params...}, ... ]. Prefer this over repeated create_automation calls when the user wants several schedules/responders at once.",
+    "Create up to 25 automations in ONE call. Pass 'automations': [ {type, name, response, cron|schedule:{every_minutes|daily_at|weekly_on}, channel_id/channel_name, keywords, duration, role_id/role_name}, ... ]. Each item follows create_automation shape. Prefer bulk over repeated single calls when user wants several automations.",
     {"automations": {"type": "array", "required": True, "items": "object"}},
     permission="administrator", danger="medium", verifier="automation_exists", retries=1)
 

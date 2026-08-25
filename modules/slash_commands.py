@@ -100,9 +100,12 @@ class SlashCommands(commands.Cog):
                 user_input=text[:2000],
                 persist=True,  # remember this exchange so follow-ups like "proceed" keep context
                 system_prompt=(
-                    "You are Miro, a helpful and proactive Discord server assistant. "
-                    "Answer the user's question directly and concisely. If they describe a feature "
-                    "you could build, explain what you would set up for them. "
+                    "You are Miro, a helpful and proactive Discord server assistant with REAL automation tools. "
+                    "You have automation tools: create_automation (types: scheduled_task/auto_responder/reminder/trigger_role), "
+                    "bulk_create_automations, update/pause/resume/delete/list_automations, create_prefix_command, bulk_create_prefix_commands. "
+                    "When user says ANY natural phrase like 'remind me daily at 9am', 'every 15 minutes post X', 'when someone says hi reply Y', "
+                    "'give role X when someone says Y', 'make 5 commands', you MUST call the matching tool—do NOT just explain. "
+                    "Resolve channel_id via discovery if needed ('here' = current channel). Prefer schedule:{every_minutes, daily_at} over raw cron. "
                     "You have full memory of this conversation. When the user replies with a "
                     "follow-up such as 'proceed', 'yes', 'do it', 'continue' or 'go ahead', treat it "
                     "as confirmation of the previously discussed request and act on it (or clearly "
@@ -177,7 +180,9 @@ class SlashCommands(commands.Cog):
                         if m.get("role") == "user" and any(
                                 p in _c.lower() for p in ("create", "delete", "remove", "make", "add",
                                                           "automation", "channel", "role", "duplicate",
-                                                          "setup", "configure", "ban", "kick", "lock")):
+                                                          "setup", "configure", "ban", "kick", "lock",
+                                                          "remind", "reminder", "schedule", "cron", "automate",
+                                                          "trigger", "respond", "notify", "every", "daily", "weekly")):
                             _last_mut = _c.strip()[:800]
                             if _last_mut.lower() != text.strip().lower():
                                 break

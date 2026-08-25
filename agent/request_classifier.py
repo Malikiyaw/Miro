@@ -22,6 +22,9 @@ MUTATION_PATTERNS = (
     "configure", "enable", "disable", "rename", "edit", "change", "move",
     "lock", "unlock", "ban", "kick", "timeout", "warn", "assign", "revoke",
     "clear", "purge", "wipe", "give", "take", "promote", "demote",
+    "remind", "reminder", "schedule", "scheduled", "cron", "automate",
+    "automation", "trigger", "respond", "responder", "notify", "alert",
+    "when someone", "every ", "daily", "weekly", "hourly",
 )
 QUERY_PATTERNS = (
     "what ", "which ", "list ", "show ", "find ", "search ", "how many",

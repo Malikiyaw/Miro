@@ -26,20 +26,51 @@ AUTO_PAUSE_AFTER_FAILURES = 10
 # --------------------------------------------------------------------------- #
 
 def interval_to_cron(schedule: Dict[str, Any]) -> Optional[str]:
-    """Convert {"every_minutes": 15} / {"every_hours": 2} / {"daily_at": "09:00"}
+    """Convert {"every_minutes": 15} / {"every_hours": 2} / {"daily_at": "09:00"} / {"weekly_on": "mon"}
     to a cron expression. Returns None if not an interval schedule."""
     if not isinstance(schedule, dict):
         return None
-    every_minutes = schedule.get("every_minutes") or schedule.get("interval_minutes")
-    every_hours = schedule.get("every_hours") or schedule.get("interval_hours")
-    daily_at = schedule.get("daily_at") or schedule.get("time")
-    weekly_day = schedule.get("weekly_on") or schedule.get("day_of_week")
+    every_minutes = schedule.get("every_minutes") or schedule.get("interval_minutes") or schedule.get("every_n_minutes")
+    every_hours = schedule.get("every_hours") or schedule.get("interval_hours") or schedule.get("every_n_hours")
+    daily_at = schedule.get("daily_at") or schedule.get("time") or schedule.get("at_time")
+    weekly_day = schedule.get("weekly_on") or schedule.get("day_of_week") or schedule.get("weekday")
+    every_days = schedule.get("every_days") or schedule.get("every_n_days")
+    weekdays_only = schedule.get("weekdays_only") or schedule.get("weekdays")
+    monthly_day = schedule.get("monthly_on") or schedule.get("day_of_month")
     if every_minutes is not None:
-        n = max(1, min(int(every_minutes), 1440))
-        return f"*/{n} * * * *"
+        try:
+            n = max(1, min(int(every_minutes), 1440))
+            return f"*/{n} * * * *"
+        except Exception:
+            pass
     if every_hours is not None:
-        n = max(1, min(int(every_hours), 24))
-        return f"0 */{n} * * *"
+        try:
+            n = max(1, min(int(every_hours), 24))
+            return f"0 */{n} * * *"
+        except Exception:
+            pass
+    if every_days is not None:
+        try:
+            n = max(1, min(int(every_days), 30))
+            return f"0 9 */{n} * *"
+        except Exception:
+            pass
+    if weekdays_only:
+        try:
+            # weekdays 9am
+            hh_mm = str(daily_at or schedule.get("at") or "09:00")
+            hh, mm = hh_mm.split(":")[:2]
+            return f"{int(mm)%60} {int(hh)%24} * * 1-5"
+        except Exception:
+            return None
+    if monthly_day is not None:
+        try:
+            d = max(1, min(int(monthly_day), 28))
+            hh_mm = str(daily_at or schedule.get("at") or "09:00")
+            hh, mm = hh_mm.split(":")[:2]
+            return f"{int(mm)%60} {int(hh)%24} {d} * *"
+        except Exception:
+            return None
     if daily_at:
         try:
             hh, mm = str(daily_at).split(":")[:2]
@@ -47,13 +78,27 @@ def interval_to_cron(schedule: Dict[str, Any]) -> Optional[str]:
         except (ValueError, TypeError):
             return None
     if weekly_day is not None and daily_at is None:
-        # weekly_on: 0=Sun..6=Sat, optional schedule["at"] = "HH:MM"
         at = str(schedule.get("at") or "12:00")
         try:
             hh, mm = at.split(":")[:2]
             days = str(weekly_day).lower()
-            day_map = {"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6}
-            day = day_map.get(days[:3], int(weekly_day) % 7 if str(weekly_day).isdigit() else 1)
+            # handle list like ["mon","fri"] or "mon,fri" or "weekdays"
+            if isinstance(weekly_day, list):
+                days_list = [str(d).strip().lower()[:3] for d in weekly_day]
+                day_map = {"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6}
+                nums = [str(day_map.get(d, 1)) for d in days_list]
+                day = ",".join(nums)
+            elif "," in days:
+                day_map = {"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6}
+                parts = [p.strip()[:3] for p in days.split(",")]
+                nums = [str(day_map.get(p, 1)) for p in parts]
+                day = ",".join(nums)
+            else:
+                day_map = {"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6, "weekdays": "1-5"}
+                if days[:3] in day_map and isinstance(day_map[days[:3]], str) and "-" in str(day_map[days[:3]]):
+                    day = day_map[days[:3]]
+                else:
+                    day = day_map.get(days[:3], int(weekly_day) % 7 if str(weekly_day).isdigit() else 1)
             return f"{int(mm) % 60} {int(hh) % 24} * * {day}"
         except (ValueError, TypeError):
             return None
@@ -286,6 +331,13 @@ class AutomationManagerView(discord.ui.View):
             return await interaction.response.send_message("❌ Not your panel.", ephemeral=True)
         autos = get_automations(self.guild_id)
         if self.selected in autos:
+            tid = autos[self.selected].get("task_id")
+            if tid:
+                try:
+                    from task_scheduler import task_scheduler
+                    task_scheduler.cancel_task(tid)
+                except Exception:
+                    pass
             autos[self.selected]["paused"] = True
             autos[self.selected]["paused_reason"] = "paused by admin"
             save_automations(self.guild_id, autos)
@@ -393,11 +445,14 @@ class AutomationManagerView(discord.ui.View):
         if self.selected:
             entry = autos.get(self.selected, {})
             cron = entry.get("cron", "—")
+            ch = entry.get("channel_id") or (entry.get("params") or {}).get("channel_id") or "—"
+            nxt = f"<t:{int(entry['next_run'])}:R>" if entry.get("next_run") else "—"
+            last = f"<t:{int(entry['last_run'])}:R>" if entry.get("last_run") else "never"
             embed.add_field(
                 name=f"⚙️ {self.selected}",
-                value=(f"Type: `{entry.get('type', '?')}` · Cron: `{cron}`\n"
-                       f"Handler: `{entry.get('handler', '?')}` · {health_line(entry)}\n"
-                       f"Last run: <t:{int(entry['last_run'])}:R>" if entry.get("last_run") else "Last run: never"),
+                value=(f"Type: `{entry.get('type', '?')}` · Cron: `{cron}` · Ch: `{ch}`\n"
+                       f"Handler: `{entry.get('handler', '?')}` · Next: {nxt} · {health_line(entry)}\n"
+                       f"Last run: {last} · Fail: {entry.get('fail_count',0)} · Runs: {entry.get('run_count',0)}"),
                 inline=False)
         else:
             names = self._names()

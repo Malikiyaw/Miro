@@ -280,13 +280,12 @@ class ActionHandler:
         "post_documentation", "setup_trigger_role",
         # Personalized Memory actions
         "update_user_preference",
-        # Automation actions — LIVE
+        # Automation actions — LIVE (1000x)
         "create_automation", "delete_automation", "list_automations",
-        "delete_prefix_command", "list_prefix_commands"
-            "create_automation", "delete_automation", "list_automations",
+        "delete_prefix_command", "list_prefix_commands",
         "update_automation", "pause_automation", "resume_automation", "run_automation_now",
         "bulk_create_automations", "bulk_pause_automations", "bulk_delete_automations",
-        "bulk_create_prefix_commands", "list_prefix_commands",
+        "bulk_create_prefix_commands",
 }
 
     @classmethod
@@ -2786,6 +2785,35 @@ class ActionHandler:
             hp["content"] = response
         return hp
 
+    def _resolve_channel_id(self, guild_id: int, channel_id=None, channel_name=None, interaction=None):
+        """Resolve channel_name -> channel_id via live query (1000x: any text 'in #general' / 'here')."""
+        if channel_id is not None:
+            try:
+                return int(str(channel_id))
+            except Exception:
+                pass
+        if channel_name:
+            try:
+                name = str(channel_name).lstrip("#").strip().lower()
+                if name in ("here", "current", "this channel") and interaction is not None and getattr(interaction, "channel", None) is not None:
+                    return getattr(interaction.channel, "id", None)
+                # Try bot cache
+                guild = self.bot.get_guild(guild_id) if hasattr(self.bot, "get_guild") else None
+                if guild:
+                    for ch in getattr(guild, "channels", []) + getattr(guild, "text_channels", []):
+                        if str(getattr(ch, "name", "")).lower() == name:
+                            return ch.id
+                    # fuzzy via ServerQueryEngine if available
+                    try:
+                        from server_query import ServerQueryEngine
+                        import asyncio
+                        # synchronous fallback: use dm channels not needed
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        return channel_id
+
     def _schedule_cron_job(self, guild_id: int, name: str, cron: str, handler_name: str, handler_params: dict, channel_id=None):
         """Validate cron, compute next_run, schedule via TaskScheduler with rescheduling. Returns (task_id, next_run) or (None, error)."""
         try:
@@ -2923,6 +2951,35 @@ class ActionHandler:
             response = ""
         response = str(response)
         guild_id = interaction.guild.id
+        # 1000x: quota for ALL automation types (was only scheduled_task)
+        try:
+            from modules.automation_manager import check_quota
+            quota_ok, quota_err = check_quota(guild_id, "automation")
+            if not quota_ok:
+                return False, {"error": quota_err}
+        except Exception:
+            pass
+        # 1000x: channel resolve 'here'/name -> id
+        _resolved_channel = self._resolve_channel_id(guild_id, params.get("channel_id") or (trigger.get("channel_id") if isinstance(trigger, dict) else None), params.get("channel_name") or (trigger.get("channel_name") if isinstance(trigger, dict) else None), interaction)
+        if _resolved_channel is not None:
+            # propagate to params so branches see it
+            params["channel_id"] = _resolved_channel
+            if isinstance(trigger, dict):
+                trigger["channel_id"] = _resolved_channel
+        # 1000x: overwrite guard — cancel old task_id to avoid leak
+        try:
+            existing = self._get_automations_dict(guild_id).get(name)
+            if isinstance(existing, dict):
+                old_task = existing.get("task_id")
+                if old_task:
+                    try:
+                        from task_scheduler import task_scheduler as _ts2
+                        _ts2.cancel_task(old_task)
+                    except Exception:
+                        pass
+                logger.info(f"Overwriting existing automation '{name}' (old type {existing.get('type')})")
+        except Exception:
+            pass
         try:
             if automation_type == "scheduled_task":
                 if not isinstance(schedule, dict):
@@ -2932,15 +2989,33 @@ class ActionHandler:
                 if not isinstance(action_to_perform, dict):
                     action_to_perform = {}
                 # Interval schedules: {"every_minutes": N} / {"every_hours": H} /
-                # {"daily_at": "HH:MM"} / {"weekly_on": "mon", "at": "HH:MM"}
-                from modules.automation_manager import interval_to_cron, check_quota, MAX_AUTOMATIONS_PER_GUILD
-                quota_ok, quota_err = check_quota(guild_id, "automation")
-                if not quota_ok:
-                    return False, {"error": quota_err}
+                # {"daily_at": "HH:MM"} / {"weekly_on": "mon", "at": "HH:MM"} / natural language fallback
+                from modules.automation_manager import interval_to_cron
+                # Natural-language cron fallback: handle 'daily at 9am', 'every 15 minutes' strings
+                cron_raw = schedule.get("cron") or params.get("cron") or ""
+                if isinstance(cron_raw, str) and cron_raw.strip() and cron_raw.strip().count(" ") < 4 and any(x in cron_raw.lower() for x in ("daily","every","at ","am","pm")):
+                    # Try to parse natural language into schedule object
+                    nl = cron_raw.lower()
+                    import re as _re
+                    m = _re.search(r"every\s+(\d+)\s*min", nl)
+                    if m:
+                        schedule = {"every_minutes": int(m.group(1))}
+                    elif "daily at" in nl:
+                        tm = _re.search(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", nl)
+                        if tm:
+                            h = int(tm.group(1)); mm = int(tm.group(2) or 0); ap = tm.group(3)
+                            if ap == "pm" and h != 12: h+=12
+                            if ap == "am" and h == 12: h=0
+                            schedule = {"daily_at": f"{h:02d}:{mm:02d}"}
                 interval_cron = interval_to_cron(schedule) or interval_to_cron(
                     {"every_minutes": params.get("every_minutes"), "every_hours": params.get("every_hours"),
                      "daily_at": params.get("daily_at")})
                 cron = str(schedule.get("cron") or params.get("cron") or interval_cron or "0 12 * * *").strip()
+                # If raw natural language still not cron-like, fallback to schedule parse
+                if cron.count(" ") < 4 and any(x in cron.lower() for x in ("daily","every")):
+                    interval_cron2 = interval_to_cron({"daily_at": "09:00"}) if "daily" in cron.lower() else None
+                    if interval_cron2:
+                        cron = interval_cron2
                 channel_id = trigger.get("channel_id") if isinstance(trigger, dict) else None
                 if channel_id is None:
                     channel_id = params.get("channel_id")
@@ -2950,6 +3025,11 @@ class ActionHandler:
                 if not isinstance(handler_params, dict):
                     handler_params = {}
                 handler_name = str(handler_name).strip()
+                # 1000x: validate handler against allow-list
+                _allowed_handlers = {"send_message","send_embed","announce","poll","send_notification","give_points","assign_role"}
+                if handler_name not in self.ALLOWED_ACTIONS and handler_name not in _allowed_handlers:
+                    # allow but log; keep permissive for future handlers
+                    logger.warning(f"Unverified handler '{handler_name}' for automation '{name}' — allowing")
                 handler_params = self._normalize_scheduled_params(handler_name, handler_params, channel_id, response)
                 task_id, nxt_or_err = self._schedule_cron_job(guild_id, name, cron, handler_name, handler_params)
                 if task_id is None:
@@ -2959,6 +3039,52 @@ class ActionHandler:
                 self._save_automations_dict(guild_id, autos)
                 logger.info(f"Created LIVE scheduled automation: {name} cron:{cron} guild:{guild_id}")
                 return True, {"automation_id": name, "type": automation_type, "cron": cron, "next_run": nxt_or_err, "task_id": task_id, "handler": handler_name}
+            elif automation_type in ("trigger_role", "trigger-role", "role_trigger"):
+                # 1000x: new type — keyword -> role assignment
+                if not isinstance(trigger, dict):
+                    trigger = {}
+                raw_keywords = trigger.get("keywords") or params.get("keywords") or params.get("keyword") or []
+                if isinstance(raw_keywords, str):
+                    raw_keywords = [k.strip() for k in raw_keywords.split(",") if k.strip()] if "," in raw_keywords else [raw_keywords.strip()] if raw_keywords.strip() else []
+                triggers = [str(k).strip().lower() for k in (raw_keywords if isinstance(raw_keywords, list) else [raw_keywords]) if str(k).strip()]
+                if not triggers:
+                    triggers = [name.lower()]
+                role_id = trigger.get("role_id") or params.get("role_id")
+                role_name = trigger.get("role_name") or params.get("role_name")
+                if role_id is None and role_name:
+                    try:
+                        guild = self.bot.get_guild(guild_id)
+                        if guild:
+                            for r in getattr(guild, "roles", []):
+                                if str(getattr(r, "name", "")).lower() == str(role_name).lower():
+                                    role_id = r.id
+                                    break
+                    except Exception:
+                        pass
+                if role_id is None:
+                    return False, {"error": "trigger_role requires role_id or role_name (resolve via query_roles)."}
+                try:
+                    role_id = int(str(role_id))
+                except Exception:
+                    return False, {"error": f"Invalid role_id: {role_id}"}
+                # Store as automation; actual trigger is via trigger_roles system (mirror to auto_responder-like)
+                try:
+                    from modules.trigger_roles import TriggerRoles
+                except Exception:
+                    pass
+                autos = self._get_automations_dict(guild_id)
+                autos[name] = {"type": "trigger_role", "name": name, "keywords": triggers, "role_id": role_id, "response": response, "trigger": trigger, "created_by": getattr(interaction.user, "id", 0), "created_at": time.time()}
+                self._save_automations_dict(guild_id, autos)
+                # Also register with TriggerRoles persistent store if available
+                try:
+                    tr = getattr(self.bot, "trigger_roles", None)
+                    if tr and hasattr(tr, "add_trigger"):
+                        for kw in triggers:
+                            tr.add_trigger(guild_id, kw, role_id)
+                except Exception as e:
+                    logger.debug(f"TriggerRoles add failed: {e}")
+                logger.info(f"Created trigger_role automation: {name} keywords:{triggers} role:{role_id} guild:{guild_id}")
+                return True, {"automation_id": name, "type": "trigger_role", "keywords": triggers, "role_id": role_id}
             elif automation_type == "auto_responder":
                 if not isinstance(trigger, dict):
                     trigger = {}

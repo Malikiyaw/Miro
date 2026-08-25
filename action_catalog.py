@@ -514,6 +514,51 @@ ACTION_CATALOG = {
         },
         "keywords": ["delete command", "remove command"]
     },
+    "create_automation": {
+        "name": "create_automation",
+        "description": "Create LIVE automation: scheduled_task (cron/schedule), auto_responder (keywords), reminder (duration), trigger_role (keywords+role). Fires live, survives restarts. Use schedule:{every_minutes|every_hours|daily_at|weekly_on} over raw cron when possible.",
+        "category": "Automation",
+        "parameters": {
+            "type": {"type": "string", "required": True, "description": "Automation type: scheduled_task | auto_responder | reminder | trigger_role"},
+            "name": {"type": "string", "required": True, "description": "Unique automation name"},
+            "response": {"type": "string", "required": False, "description": "Message/response text"},
+            "cron": {"type": "string", "required": False, "description": "Cron e.g. '0 12 * * *' noon, '*/15 * * * *' every 15m"},
+            "schedule": {"type": "object", "required": False, "description": "Easier: {every_minutes:15}|{every_hours:2}|{daily_at:'09:00'}|{weekly_on:'Mon',at:'08:00'}"},
+            "duration": {"type": "integer", "required": False, "description": "Seconds for reminder (600=10m, 3600=1h)"},
+            "keywords": {"type": "array", "required": False, "description": "Trigger keywords for auto_responder/trigger_role"},
+            "action_type": {"type": "string", "required": False, "description": "Handler for scheduled_task e.g. send_message"},
+            "channel_id": {"type": "integer", "required": False, "description": "Target channel ID (resolve via query_channels; here=current)"},
+            "channel_name": {"type": "string", "required": False, "description": "Channel name alternative to ID"},
+            "role_id": {"type": "integer", "required": False, "description": "Role ID for trigger_role"},
+            "role_name": {"type": "string", "required": False, "description": "Role name alternative"},
+            "timezone": {"type": "string", "required": False, "description": "Timezone e.g. UTC/PST"}
+        },
+        "aliases": ["create_automation_rule", "make_automation", "add_automation"],
+        "keywords": ["automation", "create automation", "remind", "reminder", "daily", "every", "schedule", "cron", "recurring", "automate", "timer", "auto responder", "when someone says", "trigger role", "give role", "notification"]
+    },
+    "update_automation": {
+        "name": "update_automation",
+        "description": "Update existing automation cron/schedule/channel/response",
+        "category": "Automation",
+        "parameters": {
+            "name": {"type": "string", "required": True, "description": "Existing automation name"},
+            "cron": {"type": "string", "required": False, "description": "New cron"},
+            "schedule": {"type": "object", "required": False, "description": "New schedule object"},
+            "response": {"type": "string", "required": False, "description": "New response"},
+            "channel_id": {"type": "string", "required": False, "description": "New channel ID/name"}
+        },
+        "keywords": ["update automation", "change automation", "edit automation"]
+    },
+    "pause_automation": {"name": "pause_automation", "description": "Pause automation without deleting", "category": "Automation", "parameters": {"name": {"type": "string", "required": True, "description": "Automation name"}}, "keywords": ["pause automation", "stop automation", "disable automation"]},
+    "resume_automation": {"name": "resume_automation", "description": "Resume paused automation", "category": "Automation", "parameters": {"name": {"type": "string", "required": True, "description": "Automation name"}}, "keywords": ["resume automation", "enable automation", "unpause automation"]},
+    "run_automation_now": {"name": "run_automation_now", "description": "Test-fire automation immediately", "category": "Automation", "parameters": {"name": {"type": "string", "required": True, "description": "Automation name"}}, "keywords": ["run automation", "test automation", "execute automation"]},
+    "delete_automation": {"name": "delete_automation", "description": "Delete automation and cancel job", "category": "Automation", "parameters": {"name": {"type": "string", "required": True, "description": "Automation name"}}, "keywords": ["delete automation", "remove automation", "cancel automation"]},
+    "list_automations": {"name": "list_automations", "description": "List LIVE automations", "category": "Automation", "parameters": {}, "keywords": ["list automations", "show automations", "automations"]},
+    "bulk_create_automations": {"name": "bulk_create_automations", "description": "Create up to 25 automations in one call (1000x)", "category": "Automation", "parameters": {"automations": {"type": "array", "required": True, "description": "Array of create_automation params"}}, "keywords": ["bulk automation", "many automations", "create automations"]},
+    "bulk_pause_automations": {"name": "bulk_pause_automations", "description": "Pause many automations by names/all/type", "category": "Automation", "parameters": {"names": {"type": "array", "required": False}, "all": {"type": "boolean", "required": False}, "type": {"type": "string", "required": False}}, "keywords": ["bulk pause", "pause all"]},
+    "bulk_delete_automations": {"name": "bulk_delete_automations", "description": "Delete many automations at once", "category": "Automation", "parameters": {"names": {"type": "array", "required": False}, "all": {"type": "boolean", "required": False}, "type": {"type": "string", "required": False}}, "keywords": ["bulk delete", "delete all"]},
+    "bulk_create_prefix_commands": {"name": "bulk_create_prefix_commands", "description": "Create up to 25 !commands in one call", "category": "Custom Commands", "parameters": {"commands": {"type": "array", "required": True}}, "keywords": ["bulk commands", "many commands"]},
+    "list_prefix_commands": {"name": "list_prefix_commands", "description": "List custom prefix commands", "category": "Custom Commands", "parameters": {}, "keywords": ["list commands", "show commands"]},
     "schedule_ai_action": {
         "name": "schedule_ai_action",
         "description": "Schedules an AI action to run on a cron schedule",
@@ -1007,8 +1052,8 @@ CATEGORY_GROUPS = {
                    "set_nickname", "warn_user", "update_profile"],
     "Economy": ["give_points", "remove_points"],
     "Server Management": ["create_invite", "ping"],
-    "Custom Commands": ["create_prefix_command", "delete_prefix_command"],
-    "Automation": ["schedule_ai_action", "create_task"],
+    "Custom Commands": ["create_prefix_command", "delete_prefix_command", "bulk_create_prefix_commands", "list_prefix_commands"],
+    "Automation": ["create_automation", "update_automation", "pause_automation", "resume_automation", "run_automation_now", "delete_automation", "list_automations", "bulk_create_automations", "bulk_pause_automations", "bulk_delete_automations", "schedule_ai_action", "create_task"],
     "System Setup": ["setup_verification", "setup_tickets", "setup_applications", "setup_appeals",
                      "setup_moderation", "setup_logging", "setup_economy", "setup_leveling",
                      "setup_welcome", "setup_staff_system", "setup_trigger_role",
