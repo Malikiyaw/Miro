@@ -6,6 +6,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from logger import logger
+from ai_client import AIClientError
 from agent.state import AgentExecutionResult, AgentJob, AgentState, ErrorType, FinalAIResponse, Observation, Receipt
 from agent.planner import Planner
 from agent.tool_registry import tool_registry
@@ -17,7 +18,7 @@ from agent.request_classifier import classify_request
 from agent.policies import MAX_AGENT_STEPS, MAX_TOOL_RETRIES
 
 DANGEROUS_TOOLS = {"delete_channel", "delete_role", "delete_messages", "bulk_delete_channels", "cleanup_duplicate_channels", "ban_user", "kick_user", "softban_user", "timeout_user", "setup_moderation"}
-MUTATING_TOOLS = {"create_channel", "create_role", "edit_channel", "edit_role", "send_message", "reply_message", "add_reaction", "send_notification", "assign_role", "remove_role", "create_webhook", "connect_systems", "move_system", "bulk_delete_channels", "cleanup_duplicate_channels"}
+MUTATING_TOOLS = {"create_channel", "create_role", "edit_channel", "edit_role", "send_message", "reply_message", "add_reaction", "send_notification", "assign_role", "remove_role", "create_webhook", "connect_systems", "move_system", "bulk_delete_channels", "cleanup_duplicate_channels", "create_automation", "bulk_create_automations", "create_prefix_command", "bulk_create_prefix_commands", "update_automation", "delete_automation", "pause_automation", "resume_automation", "delete_prefix_command"}
 CONFIRM_THRESHOLD_ACTIONS = 3
 
 
@@ -46,15 +47,18 @@ class AgentRuntime:
         self.state = AgentState.PLANNING
         self._signatures: List[str] = []
         self._nudges = 0
+        self._max_plan_attempts = 3
         self._original_request = ""
-        self._history: List[str] = []
+        # Single source of truth for the progress board: reasoning lines and
+        # verified observation records share one list so the board never shows
+        # a duplicated "🤖 Miro Agent" header.
+        self._history = self.observer.history
 
     async def _progress(self, text: str):
-        lines = ["🤖 Miro Agent", "━━━━━━━━━━━━━━━━"] + self._history[-6:] + [text]
         if self.on_progress is None:
             return
         try:
-            out = self.on_progress("\n".join(lines)[:1900])
+            out = self.on_progress(self.observer.board(text)[:1900])
             if asyncio.iscoroutine(out):
                 await asyncio.wait_for(out, timeout=5.0)
         except Exception as exc:
@@ -223,12 +227,29 @@ class AgentRuntime:
             if not pending_actions:
                 self.state = AgentState.PLANNING
                 job.status = AgentState.PLANNING
-                try:
-                    ai_result = await self.planner.decide(self.guild.id, getattr(self.user, "id", 0), user_request if step == 0 else "Continue based on the observations above.", extra_messages=messages)
-                except Exception as exc:
-                    result.final_state = AgentState.FAILED
-                    job.status = AgentState.FAILED
-                    return FinalAIResponse(text=f"⚠️ Agent planning failed: {str(exc)[:200]}", state=AgentState.FAILED), result
+                ai_result = None
+                plan_attempt = 0
+                while plan_attempt < self._max_plan_attempts:
+                    plan_attempt += 1
+                    try:
+                        ai_result = await self.planner.decide(self.guild.id, getattr(self.user, "id", 0), user_request if step == 0 else "Continue based on the observations above.", extra_messages=messages)
+                        break
+                    except AIClientError as e:
+                        # Transient provider errors are retried before surfacing
+                        # a friendly failure instead of a raw "503 All providers failed".
+                        retryable = e.status >= 500 or e.status in (408, 429, 504)
+                        if plan_attempt < self._max_plan_attempts and retryable:
+                            await self._progress(f"🔄 AI provider hiccup (try {plan_attempt}/{self._max_plan_attempts}); retrying plan…")
+                            await asyncio.sleep(min(2 ** plan_attempt, 6))
+                            continue
+                        result.final_state = AgentState.FAILED
+                        job.status = AgentState.FAILED
+                        return FinalAIResponse(text=("⚠️ My AI providers are temporarily unavailable or all failed after retries. "
+                                                      "Please try again in a minute — or ask an admin to run `/config test`."), state=AgentState.FAILED), result
+                    except Exception:
+                        result.final_state = AgentState.FAILED
+                        job.status = AgentState.FAILED
+                        return FinalAIResponse(text="⚠️ Agent planning failed: the AI service could not be reached. Please try again shortly.", state=AgentState.FAILED), result
                 if not isinstance(ai_result, dict):
                     result.final_state = AgentState.FAILED
                     job.status = AgentState.FAILED
@@ -400,7 +421,7 @@ class AgentRuntime:
                     except Exception:
                         pass
                 obs.marker_line = self.observer.record(obs)
-                await self._progress(self.observer.board("⏳ Observing result…"))
+                await self._progress("⏳ Observing result…")
                 messages.append(self.observer.observation_message(obs))
 
             if step >= self.max_steps:

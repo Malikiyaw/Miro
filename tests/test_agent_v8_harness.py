@@ -89,3 +89,25 @@ def test_recovered_attempt_uses_latest_receipt():
     )
     verdict = CompletionGate().evaluate(result, "Channel deleted and verified.", actionable=True)
     assert verdict.allowed is True
+
+
+def test_create_automation_is_a_real_mutation_not_discovery():
+    """Regression: automation-creation tools must count as executions so the
+    completion gate does not misreport them as a 'Discovery completed — no
+    mutation executed yet' pause (screenshot bug)."""
+    from agent.runtime import MUTATING_TOOLS, DANGEROUS_TOOLS
+
+    for tool in ("create_automation", "bulk_create_automations",
+                 "create_prefix_command", "delete_automation"):
+        assert tool in MUTATING_TOOLS, f"{tool} must be a mutation tool"
+
+    result = AgentExecutionResult(
+        execution_required=True,
+        request_class="MUTATION",
+        receipts=[receipt("create_automation", parameters={"name": "daily-tip"})],
+    )
+    failed = [r for r in result.receipts if not r.success]
+    only_queries = bool(result.receipts) and not failed and all(
+        str(r.action) not in DANGEROUS_TOOLS and str(r.action) not in MUTATING_TOOLS
+        for r in result.receipts)
+    assert only_queries is False

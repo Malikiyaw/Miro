@@ -96,21 +96,48 @@ class AIClient:
         if not keys:
             logger.info(f"[AI CONFIG] guild={guild_id} provider=none status=NOT_CONFIGURED")
             return {'error':'AI_NOT_CONFIGURED','summary':'AI is not configured for this server.'}
+        last_error=None; empty_responses=0
         for bundle in keys:
-            try:
-                model_override=await self._coerce_model_for_provider(guild_id,bundle['provider'],bundle['api_key'])
-                result=await self._chat_internal(guild_id,user_id,user_input,system_prompt,bundle['api_key'],bundle['provider'],model_override=model_override,extra_messages=extra_messages)
-                if result.get('_miro_empty'): continue
-                self.report_success()
-                if persist:
-                    await self._persist_exchange(guild_id,user_id,user_input,result)
-                return result
-            except AIClientError as e:
-                logger.warning(f"[AI FALLBACK] provider={bundle['provider']} status={e.status}")
-                if e.status not in (401,403,429): raise
-            except Exception:
-                self.report_failure(); raise
-        raise AIClientError(503,'All configured AI providers failed')
+            provider=bundle['provider']; api_key=bundle['api_key']
+            attempt=0; max_attempts=3
+            while attempt<max_attempts:
+                attempt+=1
+                try:
+                    model_override=await self._coerce_model_for_provider(guild_id,provider,api_key)
+                    result=await self._chat_internal(guild_id,user_id,user_input,system_prompt,api_key,provider,model_override=model_override,extra_messages=extra_messages)
+                    if result.get('_miro_empty'):
+                        empty_responses+=1
+                        logger.warning(f"[AI EMPTY] provider={provider} returned a blank response")
+                        break  # try the next configured provider instead
+                    self.report_success()
+                    if persist:
+                        await self._persist_exchange(guild_id,user_id,user_input,result)
+                    return result
+                except AIClientError as e:
+                    last_error=e; self.report_failure()
+                    et=getattr(e.error_type,'value',e.status)
+                    logger.warning(f"[AI FALLBACK] provider={provider} attempt={attempt}/{max_attempts} status={e.status} type={et}")
+                    if e.status in (401,403):
+                        break  # wrong key for THIS provider → next provider
+                    if e.status==429:
+                        await asyncio.sleep(2); break  # rate-limited → next provider
+                    if e.status>=500 or e.status in (408,):
+                        await asyncio.sleep(min(2**attempt,6)); continue  # retry same provider w/ backoff
+                    break  # non-retryable (e.g. 400 model not found) → next provider
+                except (aiohttp.ClientError, asyncio.TimeoutError):
+                    last_error=AIClientError(504,'AI request failed (network/timeout)',error_type=AIErrorType.TIMEOUT)
+                    self.report_failure()
+                    logger.warning(f"[AI FALLBACK] provider={provider} network error (attempt {attempt})")
+                    await asyncio.sleep(min(2**attempt,6)); continue
+                except Exception as e:
+                    last_error=AIClientError(500,f'Unexpected AI error: {e}',error_type=AIErrorType.PROVIDER_ERROR)
+                    self.report_failure()
+                    logger.exception(f"[AI FALLBACK] provider={provider} unexpected error")
+                    break
+        # Every configured provider was tried and failed.
+        if empty_responses and (last_error is None or empty_responses>=len(keys)):
+            raise AIClientError(503,'All configured AI providers returned empty responses')
+        raise last_error or AIClientError(503,'All configured AI providers failed')
 
     @staticmethod
     async def _persist_exchange(guild_id:int,user_id:int,user_input:str,result:Dict[str,Any]):
