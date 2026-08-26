@@ -3105,12 +3105,6 @@ class ActionHandler:
                 if not triggers:
                     # Fallback: use name as trigger if none provided
                     triggers = [name.lower()]
-                if not response or not response.strip():
-                    return False, {"error": "auto_responder requires 'response' text."}
-                # Route through real system
-                ar = getattr(self.bot, "auto_responder", None)
-                if ar is None:
-                    return False, {"error": "AutoResponderSystem not available on bot."}
                 # Determine match/response types from trigger dict if provided
                 match_type = trigger.get("match_type", trigger.get("match", "contains"))
                 response_type = trigger.get("response_type", "text")
@@ -3119,9 +3113,22 @@ class ActionHandler:
                     match_type = "contains"
                 if response_type not in ("text", "embed", "random", "reaction"):
                     response_type = "text"
+                # A blank response is allowed when the responder is meant to DELETE the
+                # matched message (e.g. name "delete_hello") instead of replying.
+                delete_trigger = bool(trigger.get("delete_trigger") or params.get("delete_trigger") or params.get("delete"))
+                delete_intent = delete_trigger or ("delete" in str(name).lower())
+                if not response or not response.strip():
+                    if delete_intent:
+                        response = ""
+                    else:
+                        return False, {"error": "auto_responder requires 'response' text (or set delete_trigger to delete matched messages)."}
+                # Route through real system
+                ar = getattr(self.bot, "auto_responder", None)
+                if ar is None:
+                    return False, {"error": "AutoResponderSystem not available on bot."}
                 created = []
                 for kw in triggers:
-                    responder = {"trigger": kw, "response": response, "match_type": match_type, "response_type": response_type, "enabled": True, "_automation_name": name}
+                    responder = {"trigger": kw, "response": response, "match_type": match_type, "response_type": response_type, "enabled": True, "delete_trigger": bool(delete_trigger or delete_intent), "_automation_name": name}
                     try:
                         ar.add_responder(guild_id, responder)
                         created.append(kw)

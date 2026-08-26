@@ -274,6 +274,44 @@ def test_auto_responder_handle_message_sends(tmp_path, monkeypatch):
     assert any("hello there!" in s for s in CHANNEL.sent), CHANNEL.sent
 
 
+def test_auto_responder_delete_only(tmp_path, monkeypatch):
+    """A blank-response auto_responder named 'delete_*' becomes a delete-trigger responder."""
+    isolate_data(monkeypatch, tmp_path)
+    bot = make_bot()
+    inter = FakeInteraction()
+    ah = bot.action_handler
+
+    ok, info = run(ah.action_create_automation(inter, {
+        "type": "auto_responder",
+        "name": "delete_hello",
+        "keywords": ["hello"],
+        "response": " ",  # model emits a space; delete intent -> no reply needed
+    }))
+    assert ok, info
+
+    responders = dm.get_guild_data(GID, "auto_responders", [])
+    r = next((x for x in responders if x.get("_automation_name") == "delete_hello"), None)
+    assert r is not None, responders
+    assert r.get("delete_trigger") is True
+    assert r.get("response", "") == ""
+
+    class Msg:
+        content = "hello there"
+        deleted = []
+        async def delete(self):
+            Msg.deleted.append(self)
+    Msg.author = SimpleNamespace(id=555, bot=False, display_name="Alice",
+                                 mention="<@555>", roles=[])
+    Msg.guild = GUILD
+    Msg.channel = CHANNEL
+    Msg.mentions = []
+
+    CHANNEL.sent.clear()
+    run(bot.auto_responder.handle_message(Msg()))
+    assert Msg.deleted, "matched message must be deleted"
+    assert CHANNEL.sent == [], "delete-only responder must not send an empty message"
+
+
 def test_reminder_enters_real_queue(tmp_path, monkeypatch):
     from task_scheduler import task_scheduler
 

@@ -160,41 +160,39 @@ class AutoResponderSystem:
             except discord.Forbidden:
                 pass
         
-        # Send response
-        if response_type == "text":
-            if responder.get("reply_mode", False):
-                await message.channel.send(response, reference=message)
-            elif responder.get("dm_mode", False):
-                try:
-                    await message.author.send(response)
-                except discord.Forbidden:
+        # Send response (skip when there is no reply text — e.g. delete-only responders)
+        if response and response.strip():
+            if response_type == "text":
+                if responder.get("reply_mode", False):
+                    await message.channel.send(response, reference=message)
+                elif responder.get("dm_mode", False):
+                    try:
+                        await message.author.send(response)
+                    except discord.Forbidden:
+                        await message.channel.send(response)
+                else:
                     await message.channel.send(response)
-            else:
-                await message.channel.send(response)
-        
-        elif response_type == "embed":
-            embed = discord.Embed(
-                description=response,
-                color=discord.Color.blue()
-            )
-            if responder.get("reply_mode", False):
-                await message.channel.send(embed=embed, reference=message)
-            else:
-                await message.channel.send(embed=embed)
-        
-        elif response_type == "random":
-            import random
-            responses = response.split("|")
-            selected = random.choice(responses).strip()
-            await message.channel.send(selected)
-        
-        elif response_type == "reaction":
-            emojis = response.split()
-            for emoji in emojis[:5]:  # Max 5 reactions
-                try:
-                    await message.add_reaction(emoji)
-                except discord.Forbidden:
-                    pass
+            elif response_type == "embed":
+                embed = discord.Embed(
+                    description=response,
+                    color=discord.Color.blue()
+                )
+                if responder.get("reply_mode", False):
+                    await message.channel.send(embed=embed, reference=message)
+                else:
+                    await message.channel.send(embed=embed)
+            elif response_type == "random":
+                import random
+                responses = response.split("|")
+                selected = random.choice(responses).strip()
+                await message.channel.send(selected)
+            elif response_type == "reaction":
+                emojis = response.split()
+                for emoji in emojis[:5]:  # Max 5 reactions
+                    try:
+                        await message.add_reaction(emoji)
+                    except discord.Forbidden:
+                        pass
 
 
 # Compat alias: the admin panels below instantiate `AutoResponder(bot)`;
