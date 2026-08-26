@@ -245,6 +245,35 @@ def test_auto_responder_routes_through_real_system(tmp_path, monkeypatch):
     assert not [r for r in responders if r.get("_automation_name") == "greet"]
 
 
+def test_auto_responder_handle_message_sends(tmp_path, monkeypatch):
+    """End-to-end: a created auto-responder actually replies to a matching message."""
+    isolate_data(monkeypatch, tmp_path)
+    bot = make_bot()
+    inter = FakeInteraction()
+    ah = bot.action_handler
+
+    ok, info = run(ah.action_create_automation(inter, {
+        "type": "auto_responder",
+        "name": "hi_bot",
+        "keywords": ["hi"],
+        "match_type": "contains",
+        "response": "hello there!",
+    }))
+    assert ok, info
+
+    class Msg:
+        content = "hi everyone"
+    Msg.author = SimpleNamespace(id=555, bot=False, display_name="Alice",
+                                 mention="<@555>", roles=[])
+    Msg.guild = GUILD
+    Msg.channel = CHANNEL
+    Msg.mentions = []
+
+    CHANNEL.sent.clear()
+    run(bot.auto_responder.handle_message(Msg()))
+    assert any("hello there!" in s for s in CHANNEL.sent), CHANNEL.sent
+
+
 def test_reminder_enters_real_queue(tmp_path, monkeypatch):
     from task_scheduler import task_scheduler
 

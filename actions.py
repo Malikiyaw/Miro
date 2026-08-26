@@ -3129,6 +3129,14 @@ class ActionHandler:
                         logger.error(f"Failed to add responder for {kw}: {e}")
                 if not created:
                     return False, {"error": "Failed to create any auto-responder."}
+                # Ensure the auto-responder system is enabled so the responder can fire.
+                try:
+                    cfg = dm.get_guild_data(guild_id, "auto_responder_config", {}) or {}
+                    if not cfg.get("enabled", True):
+                        cfg["enabled"] = True
+                        dm.update_guild_data(guild_id, "auto_responder_config", cfg)
+                except Exception:
+                    pass
                 # Persist registry for delete
                 autos = self._get_automations_dict(guild_id)
                 autos[name] = {"type": "auto_responder", "name": name, "triggers": created, "response": response, "match_type": match_type, "response_type": response_type, "created_by": getattr(interaction.user, "id", 0), "created_at": time.time(), "trigger": trigger}

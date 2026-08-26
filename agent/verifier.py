@@ -160,7 +160,25 @@ class Verifier:
                     return False
                 entry = autos.get(wanted) or next(
                     (e for k, e in autos.items() if str(k).lower() == str(wanted).lower()), None)
-                return isinstance(entry, dict) and not entry.get("paused")
+                if not isinstance(entry, dict) or entry.get("paused"):
+                    return False
+                # Truthful verification: the automation must be LIVE in its subsystem,
+                # not merely present in the registry. A false "verified" here is what
+                # previously let broken automations (e.g. lost tool params) slip through.
+                atype = entry.get("type")
+                if atype == "auto_responder":
+                    triggers = {str(t).lower() for t in (entry.get("triggers") or [])}
+                    responders = _dm.get_guild_data(guild.id, "auto_responders", []) or []
+                    if not any(r.get("enabled") and str(r.get("trigger", "")).lower() in triggers
+                               for r in responders):
+                        return False
+                elif atype == "scheduled_task":
+                    if not entry.get("task_id") or entry.get("next_run") is None:
+                        return False
+                elif atype == "reminder":
+                    if not entry.get("reminder_id"):
+                        return False
+                return True
 
             if name in ("pause_automation", "bulk_pause_automations"):
                 from data_manager import dm as _dm
