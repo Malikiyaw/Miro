@@ -315,4 +315,28 @@ def test_create_automation_without_name_is_verifiable(monkeypatch, tmp_path):
     from agent.verifier import Verifier
     params = {"type": "auto_responder", "name": info["automation_id"]}
     assert run(Verifier(bot).verify(GUILD, "create_automation", params)) is True
+
+    # The responder must actually be wired to fire on the requested keyword, not
+    # on the auto-generated automation name (the bug that made automations silent).
+    responders = dm.get_guild_data(GID, "auto_responders", [])
+    assert any(r.get("trigger") == "hi" and r.get("response") == "Is that goat reyrey?"
+               for r in responders), responders
+
+
+def test_create_automation_preserves_model_name_and_trigger(monkeypatch, tmp_path):
+    """Regression: the model's `name`/`keywords` must survive into the stored
+    automation (lost previously because _normalize_actions ignored `arguments`)."""
+    isolate_data(monkeypatch, tmp_path)
+    bot, handler = make_bot()
+    it = FakeInteraction()
+    ok, info = run(handler.dispatch(it, "create_automation", {
+        "type": "auto_responder", "name": "greet_reyrey",
+        "keywords": ["hi"], "response": "That goat reyrey"}))
+    assert ok is True, info
+    # Stored under the model-supplied name, NOT an auto-generated 'automation_<ts>'.
+    autos = dm.get_guild_data(GID, "automations", {})
+    assert "greet_reyrey" in autos, list(autos.keys())
+    responders = dm.get_guild_data(GID, "auto_responders", [])
+    assert any(r.get("trigger") == "hi" and r.get("response") == "That goat reyrey"
+               for r in responders), responders
     assert run(v.verify(guild, "delete_prefix_command", {"name": "ghost"})) is True

@@ -111,3 +111,33 @@ def test_create_automation_is_a_real_mutation_not_discovery():
         str(r.action) not in DANGEROUS_TOOLS and str(r.action) not in MUTATING_TOOLS
         for r in result.receipts)
     assert only_queries is False
+
+
+def test_normalize_actions_reads_canonical_arguments():
+    """Regression: tool calls arrive as {id, name, arguments} (a JSON string of
+    params). If arguments are ignored the agent runs every tool with empty
+    params — automations get created with the wrong name/trigger and never fire.
+    """
+    from agent.runtime import AgentRuntime
+    raw = [{
+        "id": "call_1",
+        "name": "create_automation",
+        "arguments": '{"type": "auto_responder", "name": "greet_reyrey", "keywords": ["hi"], "response": "That goat reyrey"}',
+    }]
+    actions = AgentRuntime._normalize_actions(raw)
+    assert len(actions) == 1
+    assert actions[0]["name"] == "create_automation"
+    params = actions[0]["parameters"]
+    assert params.get("name") == "greet_reyrey"
+    assert params.get("keywords") == ["hi"]
+    assert params.get("response") == "That goat reyrey"
+    assert params.get("type") == "auto_responder"
+
+    # Legacy {function:{name, arguments}} shape must still work.
+    legacy = [{
+        "id": "call_2",
+        "function": {"name": "create_channel", "arguments": '{"name": "general"}'},
+    }]
+    legacy_actions = AgentRuntime._normalize_actions(legacy)
+    assert legacy_actions[0]["name"] == "create_channel"
+    assert legacy_actions[0]["parameters"].get("name") == "general"

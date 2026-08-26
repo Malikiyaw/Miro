@@ -124,8 +124,15 @@ class AgentRuntime:
 
     @staticmethod
     def _normalize_actions(raw_calls) -> List[Dict[str, Any]]:
-        """Accept BOTH internal {name,parameters} entries and provider-native
-        {id,function:{name,arguments}} entries; arguments may be a JSON string."""
+        """Accept ALL tool-call shapes the model/client can emit:
+        - internal {name, parameters}
+        - provider-native {id, function:{name, arguments}}
+        - canonical normalized form {id, name, arguments}   <-- emitted by
+          normalize_provider_response, where `arguments` holds a JSON string (or
+          dict) of the model's parameters. Previously only `parameters` and
+          `function.arguments` were read, so params silently resolved to {} and
+          every agent tool (e.g. create_automation) ran with empty arguments.
+        """
         import json as _json
         actions: List[Dict[str, Any]] = []
         for tc in raw_calls or []:
@@ -136,7 +143,11 @@ class AgentRuntime:
             fn = tc.get("function")
             if not name and isinstance(fn, dict):
                 name = fn.get("name")
-                raw_args = fn.get("arguments", "{}")
+            # Resolve arguments from any of the accepted shapes.
+            raw_args = tc.get("arguments")
+            if raw_args is None and isinstance(fn, dict):
+                raw_args = fn.get("arguments")
+            if not isinstance(params, dict):
                 if isinstance(raw_args, str):
                     try:
                         params = _json.loads(raw_args or "{}")
