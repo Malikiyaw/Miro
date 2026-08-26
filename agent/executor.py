@@ -222,6 +222,19 @@ class Executor:
             success, info = False, {"error": str(e)[:500], "exception": type(e).__name__}
 
         info = info if isinstance(info, dict) else {"result": str(info)}
+        # Propagate resolved identifiers back into params so post-execution
+        # verification (Verifier.verify) checks the ACTUAL stored key rather than
+        # a possibly-absent request param. Fixes "Unverified" for create_automation
+        # when the model omits `name` (the action auto-generates it).
+        if success and isinstance(info, dict):
+            for key in ("name", "automation_id", "automation_name", "id",
+                        "channel_id", "role_id", "user_id", "member_id"):
+                val = info.get(key)
+                if val is not None and not params.get(key):
+                    params[key] = val
+            auto_name = info.get("automation_id") or info.get("name")
+            if auto_name and not params.get("name"):
+                params["name"] = auto_name
         error_text = str(info.get("error", "")); target_id = ""
         for key in ("channel_id", "role_id", "user_id", "member_id"):
             if info.get(key): target_id = str(info[key]); break
@@ -237,7 +250,11 @@ class Executor:
                 ids = [str(x.get("id")) for x in info["matches"] if isinstance(x, dict) and x.get("id")]
                 message = f"matches={ids}"
             elif error_text: message = error_text
-            else: message = str(info.get("result") or "ActionHandler returned no message")
+            else:
+                # Build a sensible message from resolved identifiers so the
+                # progress board never shows the bare "ActionHandler returned no message".
+                auto = info.get("automation_id") or info.get("name")
+                message = f"Automation '{auto}' handled." if auto else str(info.get("result") or "ActionHandler returned no message")
         et = ErrorType.NONE if success else (classify_error(error_text) if error_text else ErrorType.UNKNOWN)
         try:
             tool_meta = self.get(name)

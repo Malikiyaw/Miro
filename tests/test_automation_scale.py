@@ -293,4 +293,26 @@ def test_verifier_automation_checks(monkeypatch, tmp_path):
     assert run(v.verify(guild, "pause_automation", {"name": "live_one"})) is False
     assert run(v.verify(guild, "bulk_delete_automations", {"names": ["ghost"]})) is True
     assert run(v.verify(guild, "create_prefix_command", {"name": "mycmd"})) is True
+
+
+def test_create_automation_without_name_is_verifiable(monkeypatch, tmp_path):
+    """Regression: when the model omits `name`, the action auto-generates it and
+    returns a human-readable `message`; the executor propagates the resolved
+    name back into params so Verifier can find and verify the new automation
+    (previously ended as 'Unverified: 1')."""
+    isolate_data(monkeypatch, tmp_path)
+    bot, handler = make_bot()
+    it = FakeInteraction()
+
+    ok, info = run(handler.dispatch(it, "create_automation", {
+        "type": "auto_responder", "keywords": ["hi"],
+        "response": "Is that goat reyrey?", "channel_name": "general"}))
+    assert ok is True, info
+    assert info.get("message"), "action must return a readable message"
+    assert info.get("automation_id"), "action must return the resolved automation name"
+
+    # Simulate the executor propagation that makes verification succeed.
+    from agent.verifier import Verifier
+    params = {"type": "auto_responder", "name": info["automation_id"]}
+    assert run(Verifier(bot).verify(GUILD, "create_automation", params)) is True
     assert run(v.verify(guild, "delete_prefix_command", {"name": "ghost"})) is True

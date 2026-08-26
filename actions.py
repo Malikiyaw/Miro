@@ -898,7 +898,7 @@ class ActionHandler:
                                 "error": (info or {}).get("error") if isinstance(info, dict) and not ok else None})
             except Exception as e:
                 results.append({"index": idx, "name": item.get("name"), "ok": False, "error": str(e)[:200]})
-        return created > 0, {"created": created, "requested": len(items), "results": results}
+        return created > 0, {"message": f"Created {created}/{len(items)} automations.", "created": created, "requested": len(items), "results": results}
 
     async def action_bulk_pause_automations(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
         """Pause many automations: by names list, or all of a type, or all."""
@@ -3038,7 +3038,7 @@ class ActionHandler:
                 autos[name] = {"type": "scheduled_task", "name": name, "cron": cron, "handler": handler_name, "params": handler_params, "channel_id": channel_id, "next_run": nxt_or_err, "task_id": task_id, "created_by": getattr(interaction.user, "id", 0), "created_at": time.time(), "schedule": schedule, "trigger": trigger}
                 self._save_automations_dict(guild_id, autos)
                 logger.info(f"Created LIVE scheduled automation: {name} cron:{cron} guild:{guild_id}")
-                return True, {"automation_id": name, "type": automation_type, "cron": cron, "next_run": nxt_or_err, "task_id": task_id, "handler": handler_name}
+                return True, {"message": f"Automation '{name}' created.", "automation_id": name, "type": automation_type, "cron": cron, "next_run": nxt_or_err, "task_id": task_id, "handler": handler_name}
             elif automation_type in ("trigger_role", "trigger-role", "role_trigger"):
                 # 1000x: new type — keyword -> role assignment
                 if not isinstance(trigger, dict):
@@ -3084,7 +3084,7 @@ class ActionHandler:
                 except Exception as e:
                     logger.debug(f"TriggerRoles add failed: {e}")
                 logger.info(f"Created trigger_role automation: {name} keywords:{triggers} role:{role_id} guild:{guild_id}")
-                return True, {"automation_id": name, "type": "trigger_role", "keywords": triggers, "role_id": role_id}
+                return True, {"message": f"Automation '{name}' created.", "automation_id": name, "type": "trigger_role", "keywords": triggers, "role_id": role_id}
             elif automation_type == "auto_responder":
                 if not isinstance(trigger, dict):
                     trigger = {}
@@ -3134,7 +3134,7 @@ class ActionHandler:
                 autos[name] = {"type": "auto_responder", "name": name, "triggers": created, "response": response, "match_type": match_type, "response_type": response_type, "created_by": getattr(interaction.user, "id", 0), "created_at": time.time(), "trigger": trigger}
                 self._save_automations_dict(guild_id, autos)
                 logger.info(f"Created LIVE auto-responder automation: {name} triggers:{created} guild:{guild_id}")
-                return True, {"automation_id": name, "type": automation_type, "triggers": created, "match_type": match_type, "response_type": response_type}
+                return True, {"message": f"Automation '{name}' created.", "automation_id": name, "type": automation_type, "triggers": created, "match_type": match_type, "response_type": response_type}
             elif automation_type == "reminder":
                 if not isinstance(schedule, dict):
                     schedule = {}
@@ -3207,7 +3207,7 @@ class ActionHandler:
                 autos[name] = {"type": "reminder", "name": name, "duration": duration, "reminder_id": reminder_id, "reminder_time": reminder_time, "channel_id": channel_id, "task_id": task_id, "created_by": getattr(interaction.user, "id", 0), "created_at": time.time(), "schedule": schedule, "trigger": trigger, "response": response}
                 self._save_automations_dict(guild_id, autos)
                 logger.info(f"Created LIVE reminder automation: {name} duration:{duration}s guild:{guild_id}")
-                return True, {"automation_id": name, "type": automation_type, "duration": duration, "reminder_id": reminder_id, "reminder_time": reminder_time, "task_id": task_id, "channel_id": channel_id}
+                return True, {"message": f"Automation '{name}' created.", "automation_id": name, "type": automation_type, "duration": duration, "reminder_id": reminder_id, "reminder_time": reminder_time, "task_id": task_id, "channel_id": channel_id}
             else:
                 return False, {"error": f"Unknown automation type: {automation_type}. Use scheduled_task, auto_responder, or reminder."}
         except Exception as e:

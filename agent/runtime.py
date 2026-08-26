@@ -359,6 +359,27 @@ class AgentRuntime:
                     continue
 
                 sig = f"{name}:{json.dumps(params, sort_keys=True)[:500]}"
+                # Collapse an action already executed AND verified earlier in
+                # this same run (e.g. the initial_result plan re-issued by the
+                # planner). Re-running create_automation/mutations is redundant
+                # and produces duplicate entries, so skip re-execution and keep
+                # the prior verified receipt.
+                prior = next((r for r in result.receipts
+                              if r.action == name and r.success and r.verified
+                              and f"{r.action}:{json.dumps(r.parameters or {}, sort_keys=True)[:500]}" == sig),
+                             None)
+                if prior is not None:
+                    obs = Observation(tool=name, params=params, success=True, verified=True,
+                                      detail="already executed and verified earlier in this run",
+                                      receipt=prior)
+                    result.observations.append(obs)
+                    result.completed_steps += 1
+                    self._signatures.append(sig)
+                    await self._progress(f"✅ `{name}` already done — skipping duplicate")
+                    messages.append({"role": "user", "content":
+                                     f"`{name}` was already executed and verified earlier in this run. "
+                                     "Reply with ONLY the final user-facing summary now — no actions."})
+                    continue
                 if self._signatures[-3:].count(sig) >= 2:
                     # Redundant repeat of an already-verified action is a
                     # neutral no-op, NOT a failure (it must not poison the
