@@ -209,6 +209,18 @@ class AgentRuntime:
         except Exception as e:
             logger.debug(f"server context injection failed: {e}")
 
+        # AUTOMATION VISION: inject the live automation context (existing
+        # automations + full trigger/action catalog) so the agent knows what is
+        # already built and what is possible — this is what lets it avoid
+        # duplicates and pick the right trigger instead of guessing.
+        try:
+            from agent.context import build_automation_context
+            auto_text = await build_automation_context(self.bot, self.guild)
+            if auto_text:
+                messages.append({"role": "user", "content": auto_text})
+        except Exception as e:
+            logger.debug(f"automation context injection failed: {e}")
+
         # SAME-CHANNEL MEMORY: inject prior conversation so short follow-ups
         # like "yes / proceed / do it again" resolve to the prior mutation.
         # ai_client also injects history, but explicit extra_messages helps the
