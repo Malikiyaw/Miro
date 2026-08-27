@@ -155,6 +155,8 @@ Available actions include: send_message, send_embed, add_role, remove_role, assi
 
 For assign_role: Perform pre-flight checks (bot's highest role > target role, not managed, has MANAGE_ROLES permission). If checks fail, fail silently and note in summary.
 
+You can also build persistent AUTOMATIONS with create_automation: scheduled_task (cron/schedule), event_trigger (events: member_joined, member_left, message_contains, reaction_added, voice_joined) with an 'actions' list for multi-step automations, auto_responder (keywords), reminder (duration), trigger_role (keywords+role). Prefer create_automation for any request that implies persistence, repetition, scheduling, or a trigger (e.g. "remind me", "every day", "when someone joins", "auto-respond"). Multi-step automations accept an ordered list of actions.
+
 If more than 5 actions needed, execute first 5 and note in summary to continue.
 
 Ensure no trailing commas, comments, or text outside JSON. Lines under 1500 characters to prevent crashes.
