@@ -608,6 +608,15 @@ class MiroBot(commands.Bot):
         # Auto publisher (thread publishing / bump reminders)
         await safe(self.auto_publisher.on_message(message), "auto_publisher")
 
+        # 1000x: event-driven automations on chat (message_contains trigger)
+        try:
+            if getattr(message, "guild", None) is not None and not getattr(getattr(message, "author", None), "bot", False):
+                await self.action_handler.fire_event(message.guild.id, "message_contains",
+                                                     {"message": message, "channel": message.channel,
+                                                      "member": message.author, "content": message.content})
+        except Exception as _fe:
+            logger.debug(f"message_contains automation error: {_fe}")
+
         # Internal event bus (analytics + future reactive systems)
         if getattr(message, "guild", None) is not None:
             await self.event_bus.publish(
@@ -624,6 +633,10 @@ class MiroBot(commands.Bot):
             await self.welcome_leave.handle_member_join(member)
             await self.anti_raid.handle_join(member)  # anti_raid uses handle_join
             asyncio.create_task(self.event_bus.publish("member.joined", guild_id=member.guild.id, user_id=member.id))
+            try:
+                await self.action_handler.fire_event(member.guild.id, "member_joined", {"member": member})
+            except Exception as _fe:
+                logger.debug(f"member_joined automation error: {_fe}")
         except Exception as e:
             logger.error(f"Member join error: {e}")
 
@@ -634,6 +647,10 @@ class MiroBot(commands.Bot):
             await self.anti_raid.handle_member_remove(member)
             await self.staff_extras.on_member_remove(member)
             asyncio.create_task(self.event_bus.publish("member.left", guild_id=member.guild.id, user_id=member.id))
+            try:
+                await self.action_handler.fire_event(member.guild.id, "member_left", {"member": member})
+            except Exception as _fe:
+                logger.debug(f"member_left automation error: {_fe}")
         except Exception as e:
             logger.error(f"Member remove error: {e}")
 
@@ -642,6 +659,12 @@ class MiroBot(commands.Bot):
         try:
             await self.starboard.handle_reaction_add(reaction, user)
             await self.staff_extras.on_reaction_add(reaction, user)
+            try:
+                await self.action_handler.fire_event(reaction.message.guild.id, "reaction_added",
+                                                     {"message": reaction.message, "user": user,
+                                                      "channel": reaction.message.channel, "emoji": str(reaction.emoji)})
+            except Exception as _fe:
+                logger.debug(f"reaction_added automation error: {_fe}")
         except Exception as e:
             logger.error(f"Reaction add error: {e}")
 
