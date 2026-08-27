@@ -79,6 +79,30 @@ class ScheduledTaskInteraction:
     async def defer(self, *args, **kwargs):
         pass
 
+
+class EventInteraction:
+    """Minimal interaction stand-in for event-driven automations fired by
+    ActionHandler.fire_event. Carries the subject member + channel so actions
+    like send_message / assign_role resolve correctly."""
+    def __init__(self, bot, guild_id: int, channel=None, user=None):
+        self.bot = bot
+        self.guild = bot.get_guild(guild_id)
+        self.user = user or getattr(self.guild, "me", None) or (bot.user if hasattr(bot, "user") else None)
+        self.author = self.user
+        self.channel = channel
+        self.response = self
+        self.followup = self
+
+    async def send(self, *args, **kwargs):
+        pass
+
+    async def send_message(self, *args, **kwargs):
+        pass
+
+    async def defer(self, *args, **kwargs):
+        pass
+
+
 def is_system_enabled(guild_id: int, system_name: str) -> bool:
     """Check if a system is enabled for a guild. Returns False if not installed."""
     config_key = f"{system_name}_config"
@@ -866,8 +890,27 @@ class ActionHandler:
             except (TypeError, ValueError):
                 pass
         try:
-            ok, info = await self.dispatch(mock, entry.get("handler", "send_message"),
-                                           dict(entry.get("params") or {}))
+            if entry.get("type") == "event_trigger":
+                # event-driven automation: run its action steps directly
+                steps = entry.get("actions") or []
+                ok = True
+                last_err = ""
+                for st in steps:
+                    if not isinstance(st, dict):
+                        continue
+                    nm = st.get("name") or st.get("handler")
+                    pr = dict(st.get("parameters") if isinstance(st.get("parameters"), dict) else {})
+                    if cid and "channel_id" not in pr and "channel" not in pr:
+                        pr["channel_id"] = cid
+                    try:
+                        await self.dispatch(mock, str(nm), pr)
+                    except Exception as _se:
+                        ok = False
+                        last_err = str(_se)
+                info = {"error": last_err} if last_err else {}
+            else:
+                ok, info = await self.dispatch(mock, entry.get("handler", "send_message"),
+                                               dict(entry.get("params") or {}))
             updated = record_run(guild_id, key, bool(ok),
                                  str((info or {}).get("error", "")) if isinstance(info, dict) else "")
             return bool(ok), {"automation": key, "ran": True,
@@ -2814,8 +2857,47 @@ class ActionHandler:
                 pass
         return channel_id
 
-    def _schedule_cron_job(self, guild_id: int, name: str, cron: str, handler_name: str, handler_params: dict, channel_id=None):
-        """Validate cron, compute next_run, schedule via TaskScheduler with rescheduling. Returns (task_id, next_run) or (None, error)."""
+    def _validate_cron(self, cron: str):
+        """Return (ok, error) for a cron expression."""
+        try:
+            from croniter import croniter
+            croniter(str(cron), datetime.now())
+            return True, ""
+        except Exception as e:
+            return False, str(e)
+
+    def _build_action_steps(self, params: dict, single_action: dict, fallback_name: str, fallback_params: dict):
+        """Build the ordered list of {name, parameters} steps for an automation.
+
+        Priority: explicit `actions` list in params > single `action`/`action_type`
+        > the provided fallback (handler_name/handler_params). Always normalises to
+        a list so scheduled/event automations run the same way.
+        """
+        steps = []
+        raw_actions = params.get("actions")
+        if isinstance(raw_actions, list) and raw_actions:
+            for a in raw_actions:
+                if not isinstance(a, dict):
+                    continue
+                nm = a.get("name") or a.get("handler")
+                pr = a.get("parameters") or a.get("params") or a.get("handler_params") or {}
+                if not nm:
+                    continue
+                steps.append({"name": str(nm), "parameters": pr if isinstance(pr, dict) else {}})
+        if not steps and isinstance(single_action, dict):
+            nm = single_action.get("name") or single_action.get("handler") or params.get("action_type") or fallback_name
+            pr = single_action.get("parameters") or single_action.get("params") or single_action.get("handler_params") or fallback_params
+            if nm:
+                steps.append({"name": str(nm), "parameters": pr if isinstance(pr, dict) else {}})
+        if not steps:
+            steps.append({"name": str(fallback_name), "parameters": fallback_params if isinstance(fallback_params, dict) else {}})
+        return steps
+
+    def _schedule_cron_job(self, guild_id: int, name: str, cron: str, handler_name: str, handler_params: dict, channel_id=None, steps=None):
+        """Validate cron, compute next_run, schedule via TaskScheduler with rescheduling.
+        `steps` is an ordered list of {name, parameters} executed on each fire
+        (multi-step automations). When omitted, handler_name/handler_params is
+        treated as a single step. Returns (task_id, next_run) or (None, error)."""
         try:
             from croniter import croniter
         except Exception as e:
@@ -2824,13 +2906,32 @@ class ActionHandler:
             nxt = croniter(cron, datetime.now()).get_next(float)
         except Exception as e:
             return None, f"Invalid cron expression '{cron}': {e}"
+        ok_cron, cron_err = self._validate_cron(cron)
+        if not ok_cron:
+            return None, f"Invalid schedule '{cron}': {cron_err}"
         try:
             from task_scheduler import task_scheduler
         except Exception as e:
             return None, f"task_scheduler not available: {e}"
-        # Normalize handler
-        if not isinstance(handler_params, dict):
-            handler_params = {}
+        # Normalise steps (multi-step automations)
+        if not isinstance(steps, list) or not steps:
+            steps = [{"name": handler_name, "parameters": handler_params}]
+        _norm_steps = []
+        for _st in steps:
+            if not isinstance(_st, dict):
+                continue
+            _nm = _st.get("name") or _st.get("handler")
+            _pr = _st.get("parameters") or _st.get("params") or {}
+            if not _nm:
+                continue
+            if not isinstance(_pr, dict):
+                _pr = {}
+            if channel_id is not None and "channel_id" not in _pr and "channel" not in _pr:
+                _pr = dict(_pr)
+                _pr["channel_id"] = channel_id
+            _norm_steps.append({"name": str(_nm), "parameters": _pr})
+        if not _norm_steps:
+            return None, "automation requires at least one action step"
         # Inject channel_id into params if provided and not already there
         if channel_id is not None and "channel_id" not in handler_params and "channel" not in handler_params:
             handler_params = dict(handler_params)
@@ -2843,7 +2944,9 @@ class ActionHandler:
                 if mock.guild is None:
                     logger.warning(f"Scheduled task '{_name}': guild {_gid} not found; dropping")
                     return
-                cid = (_params or {}).get("channel_id")
+                cid = None
+                for _s in _norm_steps:
+                    cid = _s["parameters"].get("channel_id") or cid
                 if cid:
                     try:
                         ch = self.bot.get_channel(int(str(cid)))
@@ -2860,19 +2963,20 @@ class ActionHandler:
                         return
                 except Exception:
                     pass
-                # Merge live params copy
+                # Run each step in order (multi-step automations)
+                _ok = True
+                for _step in _norm_steps:
+                    try:
+                        await self.dispatch(mock, _step["name"], dict(_step["parameters"]))
+                    except Exception as _run_exc:
+                        _ok = False
+                        logger.error(f"Automation '{_name}' step {_step['name']} failed: {_run_exc}")
                 try:
-                    await self.dispatch(mock, _handler, dict(_params))
-                    try:
-                        _rr(_gid, _name, True)
-                    except Exception:
-                        pass
-                except Exception as _run_exc:
-                    try:
-                        _rr(_gid, _name, False, str(_run_exc))
-                    except Exception:
-                        pass
-                    raise
+                    _rr(_gid, _name, _ok, "" if _ok else "one or more steps failed")
+                except Exception:
+                    pass
+                if not _ok:
+                    raise RuntimeError(f"automation '{_name}' step(s) failed")
                 # Schedule next occurrence (unless auto-pause kicked in)
                 try:
                     from croniter import croniter as _ci
@@ -3016,6 +3120,21 @@ class ActionHandler:
                     interval_cron2 = interval_to_cron({"daily_at": "09:00"}) if "daily" in cron.lower() else None
                     if interval_cron2:
                         cron = interval_cron2
+                # 1000x: broader natural-language schedule parsing via automation_knowledge
+                if cron.count(" ") < 4 and any(ch.isalpha() for ch in str(cron)):
+                    try:
+                        from agent.automation_knowledge import parse_natural_language_schedule
+                        _p = parse_natural_language_schedule(str(cron))
+                        if isinstance(_p, dict):
+                            if "cron" in _p:
+                                cron = _p["cron"]
+                            elif any(k in _p for k in ("daily_at", "every_minutes", "every_hours", "weekly_on", "weekdays_only")):
+                                _merged = dict(schedule); _merged.update(_p)
+                                _ic = interval_to_cron(_merged)
+                                if _ic:
+                                    cron = _ic
+                    except Exception:
+                        pass
                 channel_id = trigger.get("channel_id") if isinstance(trigger, dict) else None
                 if channel_id is None:
                     channel_id = params.get("channel_id")
@@ -3031,11 +3150,12 @@ class ActionHandler:
                     # allow but log; keep permissive for future handlers
                     logger.warning(f"Unverified handler '{handler_name}' for automation '{name}' — allowing")
                 handler_params = self._normalize_scheduled_params(handler_name, handler_params, channel_id, response)
-                task_id, nxt_or_err = self._schedule_cron_job(guild_id, name, cron, handler_name, handler_params)
+                action_steps = self._build_action_steps(params, action_to_perform, handler_name, handler_params)
+                task_id, nxt_or_err = self._schedule_cron_job(guild_id, name, cron, handler_name, handler_params, steps=action_steps)
                 if task_id is None:
                     return False, {"error": nxt_or_err}
                 autos = self._get_automations_dict(guild_id)
-                autos[name] = {"type": "scheduled_task", "name": name, "cron": cron, "handler": handler_name, "params": handler_params, "channel_id": channel_id, "next_run": nxt_or_err, "task_id": task_id, "created_by": getattr(interaction.user, "id", 0), "created_at": time.time(), "schedule": schedule, "trigger": trigger}
+                autos[name] = {"type": "scheduled_task", "name": name, "cron": cron, "handler": handler_name, "params": handler_params, "actions": action_steps, "channel_id": channel_id, "next_run": nxt_or_err, "task_id": task_id, "created_by": getattr(interaction.user, "id", 0), "created_at": time.time(), "schedule": schedule, "trigger": trigger}
                 self._save_automations_dict(guild_id, autos)
                 logger.info(f"Created LIVE scheduled automation: {name} cron:{cron} guild:{guild_id}")
                 return True, {"message": f"Automation '{name}' created.", "automation_id": name, "type": automation_type, "cron": cron, "next_run": nxt_or_err, "task_id": task_id, "handler": handler_name}
@@ -3150,6 +3270,38 @@ class ActionHandler:
                 self._save_automations_dict(guild_id, autos)
                 logger.info(f"Created LIVE auto-responder automation: {name} triggers:{created} guild:{guild_id}")
                 return True, {"message": f"Automation '{name}' created.", "automation_id": name, "type": automation_type, "triggers": created, "match_type": match_type, "response_type": response_type}
+            elif automation_type in ("event_trigger", "event"):
+                # 1000x: real event-driven automation (member join, reaction, etc.)
+                if not isinstance(trigger, dict):
+                    trigger = {}
+                event = params.get("event") or trigger.get("event") or trigger.get("trigger_event")
+                if not event:
+                    return False, {"error": "event_trigger requires 'event' (member_joined, member_left, message_contains, reaction_added, voice_joined)."}
+                event = str(event).strip().lower()
+                _valid_events = ("member_joined", "member_left", "message_contains", "reaction_added", "voice_joined")
+                if event not in _valid_events:
+                    return False, {"error": f"Unknown event '{event}'. Use one of: {', '.join(_valid_events)}."}
+                filters = params.get("filters") or trigger.get("filters") or {}
+                if not isinstance(filters, dict):
+                    filters = {}
+                raw_keywords = params.get("keywords") or trigger.get("keywords") or filters.get("keywords") or []
+                if isinstance(raw_keywords, str):
+                    raw_keywords = [k.strip() for k in raw_keywords.split(",") if k.strip()]
+                if not isinstance(raw_keywords, list):
+                    raw_keywords = []
+                triggers = [str(k).strip().lower() for k in raw_keywords if str(k).strip()]
+                match_type = params.get("match_type") or trigger.get("match_type") or "contains"
+                if event == "message_contains" and not triggers:
+                    return False, {"error": "event_trigger with event:message_contains requires 'keywords'."}
+                channel_id = trigger.get("channel_id") or params.get("channel_id") or filters.get("channel_id")
+                action_steps = self._build_action_steps(params, action_to_perform, "send_message", {})
+                if not action_steps:
+                    return False, {"error": "event_trigger requires 'actions' (list of {name, parameters})."}
+                autos = self._get_automations_dict(guild_id)
+                autos[name] = {"type": "event_trigger", "name": name, "event": event, "filters": filters, "keywords": triggers, "match_type": match_type, "actions": action_steps, "channel_id": channel_id, "created_by": getattr(interaction.user, "id", 0), "created_at": time.time(), "trigger": trigger}
+                self._save_automations_dict(guild_id, autos)
+                logger.info(f"Created LIVE event_trigger automation: {name} event:{event} guild:{guild_id}")
+                return True, {"message": f"Automation '{name}' created.", "automation_id": name, "type": "event_trigger", "event": event, "actions": [s["name"] for s in action_steps]}
             elif automation_type == "reminder":
                 if not isinstance(schedule, dict):
                     schedule = {}
@@ -3165,6 +3317,21 @@ class ActionHandler:
                     duration = params.get("duration")
                 if duration is None:
                     duration = 3600
+                # 1000x: parse natural-language relative time ("in 2 hours", "in 30 minutes")
+                if isinstance(duration, int) and duration == 3600:
+                    _nl = schedule.get("cron")
+                    if not _nl:
+                        _nl = params.get("cron")
+                    if not _nl and isinstance(trigger, dict):
+                        _nl = trigger.get("cron")
+                    if isinstance(_nl, str) and _nl.strip():
+                        try:
+                            from agent.automation_knowledge import parse_natural_language_schedule
+                            _p = parse_natural_language_schedule(_nl)
+                            if isinstance(_p, dict) and "_reminder_seconds" in _p:
+                                duration = _p["_reminder_seconds"]
+                        except Exception:
+                            pass
                 try:
                     duration = int(duration)
                 except Exception:
@@ -3224,12 +3391,98 @@ class ActionHandler:
                 logger.info(f"Created LIVE reminder automation: {name} duration:{duration}s guild:{guild_id}")
                 return True, {"message": f"Automation '{name}' created.", "automation_id": name, "type": automation_type, "duration": duration, "reminder_id": reminder_id, "reminder_time": reminder_time, "task_id": task_id, "channel_id": channel_id}
             else:
-                return False, {"error": f"Unknown automation type: {automation_type}. Use scheduled_task, auto_responder, or reminder."}
+                return False, {"error": f"Unknown automation type: {automation_type}. Use scheduled_task, event_trigger, auto_responder, reminder, or trigger_role."}
         except Exception as e:
             logger.error(f"Error creating automation: {e}")
             import traceback as _tb
             logger.error(_tb.format_exc())
             return False, {"error": str(e)}
+
+    async def fire_event(self, guild_id: int, event: str, ctx: dict) -> list:
+        """Run all event_trigger automations registered for `event`.
+
+        ctx may contain: member (discord.Member), channel (discord.TextChannel),
+        message (discord.Message), content (str), emoji (str), user (discord.User).
+        Returns a list of {name, event, success} for observability.
+        """
+        from modules.automation_manager import get_automations as _ga
+        autos = _ga(guild_id) or {}
+        results = []
+        for name, entry in list(autos.items()):
+            if not isinstance(entry, dict) or entry.get("type") != "event_trigger":
+                continue
+            if entry.get("event") != event:
+                continue
+            if entry.get("paused"):
+                continue
+            filters = entry.get("filters") or {}
+            ctx_chan = ctx.get("channel")
+            fchan = filters.get("channel_id")
+            if fchan is not None and ctx_chan is not None:
+                if str(getattr(ctx_chan, "id", None)) != str(fchan):
+                    continue
+            frole = filters.get("role_id")
+            member = ctx.get("member")
+            if frole is not None and member is not None:
+                if not any(str(r.id) == str(frole) for r in getattr(member, "roles", [])):
+                    continue
+            femoji = filters.get("emoji")
+            if femoji is not None and ctx.get("emoji") is not None:
+                if str(ctx.get("emoji")) != str(femoji):
+                    continue
+            if event == "message_contains":
+                content = str(ctx.get("content") or "").lower()
+                keywords = entry.get("keywords") or []
+                match_type = entry.get("match_type", "contains")
+                matched = False
+                for kw in keywords:
+                    kw = str(kw).lower()
+                    if match_type == "exact":
+                        matched = content == kw
+                    elif match_type == "starts_with":
+                        matched = content.startswith(kw)
+                    elif match_type == "ends_with":
+                        matched = content.endswith(kw)
+                    elif match_type == "regex":
+                        try:
+                            import re as _re
+                            matched = bool(_re.search(kw, content, _re.IGNORECASE))
+                        except Exception:
+                            matched = False
+                    else:
+                        matched = kw in content
+                    if matched:
+                        break
+                if not matched:
+                    continue
+                msg = ctx.get("message")
+                if msg is not None and getattr(getattr(msg, "author", None), "bot", False):
+                    continue
+            subject_id = getattr(member, "id", None) or getattr(ctx.get("user"), "id", None)
+            ch = ctx_chan
+            mock = EventInteraction(self.bot, guild_id, channel=ch, user=member or ctx.get("user"))
+            ok = True
+            for st in (entry.get("actions") or []):
+                if not isinstance(st, dict):
+                    continue
+                nm = st.get("name") or st.get("handler")
+                pr = dict(st.get("parameters") if isinstance(st.get("parameters"), dict) else {})
+                if subject_id and "user_id" not in pr and "user" not in pr:
+                    pr["user_id"] = subject_id
+                if ch is not None and "channel_id" not in pr and "channel" not in pr:
+                    pr["channel_id"] = getattr(ch, "id", None)
+                try:
+                    await self.dispatch(mock, str(nm), pr)
+                except Exception as e:
+                    ok = False
+                    logger.error(f"event_trigger '{name}' step {nm} failed: {e}")
+            try:
+                from modules.automation_manager import record_run as _rr
+                _rr(guild_id, name, ok, "" if ok else "step failure")
+            except Exception:
+                pass
+            results.append({"name": name, "event": event, "success": ok})
+        return results
 
     async def action_delete_automation(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
         """Delete an automation by name and cancel its scheduled job."""
@@ -3294,6 +3547,22 @@ class ActionHandler:
                     if name in usage:
                         del usage[name]
                         dm.update_guild_data(guild_id, "command_usage", usage)
+            elif atype == "trigger_role":
+                # Remove the keyword -> role mapping from the trigger_roles store
+                # so the role stops being assigned after deletion.
+                try:
+                    keywords = entry.get("keywords") or []
+                    tstore = dm.get_guild_data(guild_id, "trigger_roles", {}) or {}
+                    if isinstance(tstore, dict):
+                        changed = False
+                        for kw in keywords:
+                            if kw in tstore:
+                                del tstore[kw]
+                                changed = True
+                        if changed:
+                            dm.update_guild_data(guild_id, "trigger_roles", tstore)
+                except Exception as _etr:
+                    logger.debug(f"trigger_role cleanup had issue: {_etr}")
         except Exception as e:
             logger.warning(f"Cleanup for automation {name} ({atype}) had issue: {e}")
         # Remove from automations registry
