@@ -61,7 +61,7 @@ TOOL_SPECS: Dict[str, Dict[str, Any]] = {
         permission="none", danger="none"),
     "create_automation": _spec(
         "create_automation",
-        "Create a LIVE automation that runs for real. Types: scheduled_task (cron/schedule + channel + response), auto_responder (keywords + response), reminder (duration sec + response), trigger_role (keywords + role_id/role_name + response). Prefer schedule:{every_minutes:15}|{every_hours:2}|{daily_at:'09:00'}|{weekly_on:'Mon',at:'08:00'} over raw cron. 'here' = current channel (resolve via query_channels). All fire live, survive restarts.",
+        "Create a LIVE automation that runs for real. Types: scheduled_task (cron/schedule + channel + response/actions), event_trigger (event + filters + actions[], for member_joined/member_left/message_contains/reaction_added/voice_joined), auto_responder (keywords + response), reminder (duration sec + response), trigger_role (keywords + role_id/role_name + response). MULTI-STEP: pass 'actions' as a list of {name, parameters} (e.g. [{name:'send_message',...},{name:'assign_role',...}]) to run several things in order. You may pass the schedule as plain words in 'cron' (e.g. 'daily at 9am', 'every 15 minutes', 'weekdays 8am') and it is parsed automatically. Prefer schedule:{every_minutes:15}|{every_hours:2}|{daily_at:'09:00'}|{weekly_on:'Mon',at:'08:00'} over raw cron. 'here' = current channel (resolve via query_channels). All fire live, survive restarts. Max 100/guild.",
         {"type": {"type": "string", "required": True},
          "name": {"type": "string", "required": True},
          "response": {"type": "string", "required": False},
@@ -70,6 +70,10 @@ TOOL_SPECS: Dict[str, Dict[str, Any]] = {
          "duration": {"type": "integer", "required": False},
          "keywords": {"type": "array", "required": False},
          "action_type": {"type": "string", "required": False},
+         "actions": {"type": "array", "required": False, "items": "object", "description": "Multi-step list of {name, parameters} executed in order (e.g. send_message then assign_role)."},
+         "event": {"type": "string", "required": False, "description": "For type:event_trigger — one of member_joined, member_left, message_contains, reaction_added, voice_joined."},
+         "filters": {"type": "object", "required": False, "description": "Optional filters: channel_id, role_id, emoji."},
+         "match_type": {"type": "string", "required": False, "description": "For message_contains/auto_responder: contains|exact|starts_with|ends_with|regex."},
          "channel_id": {"type": "integer", "required": False},
          "channel_name": {"type": "string", "required": False},
          "role_id": {"type": "integer", "required": False},
@@ -108,7 +112,7 @@ REQUIRED_PARAMS = {
     # LIVE automations & prefix commands
     "create_prefix_command": [("name", "command name (without prefix)"), ("code", "response text")],
     "delete_prefix_command": [("cmd_name", "command name")],
-    "create_automation": [("type", "scheduled_task | auto_responder | reminder"), ("name", "automation name")],
+    "create_automation": [("type", "scheduled_task | event_trigger | auto_responder | reminder | trigger_role"), ("name", "automation name")],
     "delete_automation": [("name", "automation name")],
     "schedule_ai_action": [("cron", "cron expression, e.g. '0 12 * * *'")],
 }
