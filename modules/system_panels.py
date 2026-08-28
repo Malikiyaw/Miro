@@ -472,7 +472,7 @@ def get_group(group_key: str) -> Optional[dict]:
 class GroupPanelView(SystemPanelView):
     """One consistent control panel for every merged system group."""
 
-    TABS = ["overview", "test", "help", "history", "danger"]
+    TABS = ["overview", "settings", "actions", "diagnostics", "history", "danger"]
 
     def __init__(self, bot, interaction: discord.Interaction, group_key: str):
         spec = SYSTEM_GROUPS[group_key]
@@ -514,7 +514,7 @@ class GroupPanelView(SystemPanelView):
                        description="Status and live metrics")
         for s in self.spec["subsystems"]:
             nav.add_option(label=f"{s['label']} settings", value=f"sub:{s['key']}")
-        nav.add_option(label="🧪 Test", value="test", description="Run live diagnostics")
+        nav.add_option(label="🧪 Diagnostics", value="diagnostics", description="Run live diagnostics")
         nav.add_option(label="🕘 Recent changes", value="history", description="Audit trail for this system")
         nav.add_option(label="❓ Help", value="help", description="What these settings do")
         nav.add_option(label="☠️ Danger zone", value="danger", description="Reset configurations")
@@ -525,9 +525,12 @@ class GroupPanelView(SystemPanelView):
             self._build_subsystem_actions(self._sub())
         elif self.tab == "overview":
             self._build_overview_actions()
+        elif self.tab in ("settings", "actions"):
+            # Global settings/actions alias to overview for now; per-subsystem detail via sub: nav
+            self._build_overview_actions()
         elif self.tab == "danger":
             self._build_danger_actions()
-        elif self.tab == "test":
+        elif self.tab in ("diagnostics", "test"):
             self._build_test_actions()
 
     async def _nav_select(self, interaction: discord.Interaction):

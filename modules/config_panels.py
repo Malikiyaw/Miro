@@ -280,42 +280,34 @@ def handle_config_panel_command(guild_id: int, system: str, bot=None):
 
 
 class ConfigPanels:
-    """Message-based compatibility facade used by actions.py custom-command handlers."""
+    """Message-based compatibility facade — DEPRECATED Phase 1: use /configpanel."""
 
     def __init__(self, bot):
         self.bot = bot
 
     async def show_panel(self, message):
-        """!configpanel [system] — send the config panel for a system."""
-        if not message.author.guild_permissions.administrator and message.author.id != message.guild.owner_id:
-            return await message.channel.send("❌ Only administrators can access configuration panels.")
-
-        args = message.content.split()
-        system = args[1].lower() if len(args) > 1 else None
-
-        if not system:
-            embed = discord.Embed(
-                title="⚙️ Configuration Panels",
-                description="Select a system to configure:\n\n"
-                            "`!configpanel verification` — 🔐 Verify new members\n"
-                            "`!configpanel economy` — 💰 Coins, shop, gambling\n"
-                            "`!configpanel leveling` — 📈 XP and roles\n"
-                            "`!configpanel tickets` — 🎫 Support tickets\n"
-                            "`!configpanel auto_responder` — 💬 Auto responses\n"
-                            "`!configpanel reaction_roles` — 🎭 Reaction roles\n"
-                            "`!configpanel warnings` — ⚠️ Warnings system\n"
-                            "`!configpanel modmail` — 📬 Modmail\n"
-                            "`!configpanel logging` — 📋 Event logging",
-                color=discord.Color.blue()
-            )
-            return await message.channel.send(embed=embed)
-
-        panel = get_config_panel(message.guild.id, system, self.bot)
-        if not panel:
-            return await message.channel.send(f"❌ Unknown system '{system}'. Use `!configpanel` to list systems.")
-
-        emoji, description = get_system_info(system)
-        await message.channel.send(f"{emoji} **{system.title()}** Configuration — {description}", view=panel)
+        """!configpanel [system] — DEPRECATED. Use /configpanel."""
+        # audit deprecation use
+        try:
+            if hasattr(self.bot, "audit_log") and self.bot.audit_log:
+                self.bot.audit_log.record_action("configpanel.deprecated", str(message.author.id), f"!configpanel {message.content[:40]}", message.guild.id if message.guild else 0, source="panel", success=False)
+        except Exception:
+            pass
+        # always deprecate, even for admins
+        embed = discord.Embed(
+            title="⚠️ !configpanel is deprecated",
+            description="Use **/configpanel <system>** instead.\n\n"
+                        "• `/configpanel verification` → real control plane (channel/role selectors, post/repost/repair/test)\n"
+                        "• `/autosetup` → one-click install\n"
+                        "This legacy `!configpanel` form is kept for one release and will be removed.",
+            color=discord.Color.orange()
+        )
+        try:
+            await message.channel.send(embed=embed)
+        except Exception:
+            pass
+        # still allow legacy for one release if admin explicitly confirms? No — hard deprecate
+        return
 
 def register_all_persistent_views(bot):
     """Register all persistent views for immortal buttons."""

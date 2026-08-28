@@ -134,6 +134,18 @@ class MiroBot(commands.Bot):
         self.health = HealthMonitor()
         self.analytics_collector = AnalyticsCollector(self.event_bus)
 
+        # V10 control plane
+        try:
+            from core.installer import SystemInstaller
+            self.installer = SystemInstaller(self)
+        except Exception:
+            self.installer = None
+        try:
+            from core.resource_manager import ResourceManager
+            self.resource_manager = ResourceManager(self)
+        except Exception:
+            self.resource_manager = None
+
         # State for immortal persistence
         self._background_tasks_started = False
         self._persistent_views_registered = False
