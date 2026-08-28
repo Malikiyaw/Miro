@@ -617,6 +617,20 @@ class GroupPanelView(SystemPanelView):
                 i, f"{s['key']}:test", self._test_work(s),
                 success=f"🧪 {s['label']} test sent.", refresh=False)
             self.add_item(test_btn)
+            repair_btn = ui.Button(label="🔧 Repair", style=discord.ButtonStyle.secondary,
+                                   custom_id="miro:repair", row=uni_row)
+            repair_btn.callback = lambda i, s=sub: self.perform(
+                i, f"{s['key']}:repair", self._repair_work(s),
+                success=f"🔧 {s['label']} repair complete.", refresh=True)
+            try:
+                self.add_item(repair_btn)
+            except ValueError:
+                if uni_row < 4:
+                    repair_btn.row = uni_row + 1
+                    try:
+                        self.add_item(repair_btn)
+                    except ValueError:
+                        pass
             if self._is_manageable(sub):
                 man_btn = ui.Button(label="📋 Manage", style=discord.ButtonStyle.secondary,
                                     custom_id="miro:manage", row=uni_row)
@@ -1074,6 +1088,20 @@ class GroupPanelView(SystemPanelView):
                             created.append(f"#{ch.name}")
             self._write(sub, cfg)
             return f"enabled + {', '.join(created) if created else 'configuration ready'}"
+        return work
+
+    def _repair_work(self, sub: dict):
+        async def work():
+            if getattr(self.bot, "installer", None):
+                res = await self.bot.installer.repair(self.guild, sub.get("key"))
+                if res.get("ok"):
+                    rep = res.get("report", {})
+                    created = rep.get("created", [])
+                    reused = rep.get("reused", [])
+                    return f"repair ok: created {','.join(created) or '—'} reused {','.join(reused) or '—'}"
+                return f"repair attempted: {res}"
+            # fallback: re-run setup logic
+            return await self._setup_work(sub)()
         return work
 
     def _publish_work(self, sub: dict):
