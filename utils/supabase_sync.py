@@ -48,14 +48,23 @@ _DEBOUNCE_SEC = 30
 _last_push: Dict[str, float] = {}
 
 
+def _normalize_url(url: str) -> str:
+    """Supabase UI shows https://<ref>.supabase.co/rest/v1/ ; we need bare https://<ref>.supabase.co"""
+    u = url.strip().rstrip("/")
+    # strip trailing /rest/v1 if user pasted Data API URL
+    if u.endswith("/rest/v1"):
+        u = u[: -len("/rest/v1")].rstrip("/")
+    return u
+
 def _cfg():
     url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    url = _normalize_url(url) if url else url
     key = (os.getenv("SUPABASE_SERVICE_KEY", "")
            or os.getenv("SUPABASE_KEY", "")
            or os.getenv("SUPABASE_ANON_KEY", "")).strip()
     # also support DATABASE_URL naming confusion – if user set SUPABASE_URL incorrectly
     if not url and os.getenv("DATABASE_URL", "").startswith("http"):
-        url = os.getenv("DATABASE_URL").strip().rstrip("/")
+        url = _normalize_url(os.getenv("DATABASE_URL").strip().rstrip("/"))
     return url, key
 
 
