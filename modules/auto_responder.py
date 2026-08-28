@@ -1,0 +1,20 @@
+"""Compatibility shim: implementation moved to modules/automation.py."""
+from modules.automation import (  # noqa: F401
+    AddResponderModal,
+    AutoResponder,
+    AutoResponderPanel,
+    AutoResponderSystem,
+    ChannelRestrictionSelect,
+    CooldownModal,
+    DeleteConfirmModal,
+    DeleteResponderSelect,
+    DisableResponderSelect,
+    EditResponderModal,
+    EditResponderSelect,
+    ImportModal,
+    MatchTypeSelect,
+    ResponseTypeSelect,
+    RoleRestrictionSelect,
+    TestResponderModal,
+    setup_auto_responder,
+)
