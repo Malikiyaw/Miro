@@ -128,6 +128,45 @@ class SystemInstaller:
         ok = len(report["failed"]) == 0
         return {"ok": ok, "report": report}
 
+    def preflight(self, guild: discord.Guild, key: str) -> dict:
+        """Dry-run: what would install/repair do, without mutating."""
+        cap = get_capability(key)
+        if not cap:
+            return {"ok": False, "error": "unknown"}
+        cfg = dm.get_guild_data(guild.id, cap.config_key, {}) or {}
+        missing = []
+        for res in cap.resources:
+            if res.kind == "channel":
+                # heuristic: any channel-type setting key matching resource
+                ch = self.rm.resolve_channel(guild, cfg.get(res.key))
+                if not ch and res.required:
+                    missing.append(res.key)
+            elif res.kind == "role":
+                r = self.rm.resolve_role(guild, cfg.get(res.key))
+                if not r and res.required:
+                    missing.append(res.key)
+        # also check SYSTEM_GROUPS channel settings
+        try:
+            from modules.system_panels import SYSTEM_GROUPS
+            for g in SYSTEM_GROUPS.values():
+                for s in g["subsystems"]:
+                    if s["key"] == key:
+                        for st in s.get("settings", []):
+                            if st.get("type") == "channel" and st.get("key") not in [m for m in missing]:
+                                ch = self.rm.resolve_channel(guild, cfg.get(st["key"]))
+                                if not ch and cfg.get(st["key"]) is None and st.get("key") not in missing:
+                                    # channel not set -> would create
+                                    missing.append(st["key"])
+                        break
+        except Exception:
+            pass
+        perms_ok = guild.me.guild_permissions.manage_channels and guild.me.guild_permissions.manage_roles if guild.me else False
+        return {"ok": True, "missing": missing, "perms_ok": perms_ok, "enabled": bool(cfg.get("enabled"))}
+
+    async def dry_run(self, guild: discord.Guild, key: str) -> dict:
+        """Alias for preflight (V10 naming)."""
+        return self.preflight(guild, key)
+
     async def test(self, guild: discord.Guild, key: str) -> dict:
         cap = get_capability(key)
         if not cap:

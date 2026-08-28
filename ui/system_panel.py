@@ -50,14 +50,22 @@ class SystemPanelView(discord.ui.View):
             except Exception:
                 pass
 
-    def _audit(self, action: str, user_id: int, success: bool, detail: str = ""):
+    def _audit(self, action: str, user_id: int, success: bool, detail: str = "", metadata: dict = None):
         audit = getattr(self.bot, "audit_log", None)
         if audit is None:
             return
         try:
+            meta = {"detail": detail[:200]} if detail else {}
+            if metadata:
+                # truncate values to keep jsonl small
+                for k, v in metadata.items():
+                    try:
+                        meta[k] = str(v)[:300] if not isinstance(v, (dict, list)) else (str(v)[:300])
+                    except Exception:
+                        pass
             audit.record_action(action, actor_id=user_id, target=self.guild.name[:80]
                                 if self.guild else None, guild_id=self.guild.id if self.guild else None,
-                                source="panel", success=success, detail=detail[:200])
+                                source="panel", success=success, **meta)
         except Exception as e:
             logger.debug(f"panel audit failed: {e}")
 
@@ -114,17 +122,27 @@ class SystemPanelView(discord.ui.View):
             self._audit(action, user_id, success=False, detail=f"denied: {why}")
             return await self._deny(interaction, why, action)
 
-        # 4-6. real backend call (work persists via dm) + audit
+        # 4-6. real backend call (work persists via dm) + audit with before/after diff
         error_text = ""
         result = None
         try:
             result = await work() if work is not None else None
-            self._audit(action, user_id, success=True, detail=str(result)[:150] if result else "")
+            meta = {}
+            if isinstance(result, dict):
+                for k in ("report","checks","missing","before","after","created","reused","failed","diagnostics"):
+                    if k in result:
+                        meta[k] = result[k]
+                # for string results that embed report, also capture
+                if not meta and result:
+                    meta["result"] = str(result)[:300]
+            elif result is not None:
+                meta["result"] = str(result)[:300]
+            self._audit(action, user_id, success=True, detail=str(result)[:150] if result else "", metadata=meta)
             self._bus_publish("command.executed", source="panel")
         except Exception as e:
             error_text = f"{type(e).__name__}: {e}"
             logger.error(f"Panel action '{action}' failed: {e}")
-            self._audit(action, user_id, success=False, detail=error_text)
+            self._audit(action, user_id, success=False, detail=error_text, metadata={"error": error_text[:300]})
         finally:
             self._inflight.discard(action)
 
