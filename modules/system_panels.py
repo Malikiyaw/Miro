@@ -1875,6 +1875,40 @@ async def run_diagnostics(bot, guild: discord.Guild, spec: dict):
     return results
 
 
+def build_global_health_embed(bot, guild: discord.Guild) -> discord.Embed:
+    """V10 §62 global health:  🟢/🟡/🔴 per group."""
+    lines = []
+    total_ok = 0
+    total = 0
+    for gkey, spec in SYSTEM_GROUPS.items():
+        # run quick diagnostics per group: count healthy subsystems
+        healthy = 0
+        subs = spec["subsystems"]
+        for sub in subs:
+            cfg = dm.get_guild_data(guild.id, sub["config_key"], {}) if guild else {}
+            enabled = bool(cfg.get("enabled")) if sub.get("supports_toggle", True) else True
+            # need channel existence quick check for ch-type settings
+            ok = True
+            if enabled:
+                for st in sub.get("settings", []):
+                    if st.get("type") == "channel" and cfg.get(st["key"]):
+                        ch = guild.get_channel(int(str(cfg[st["key"]]))) if guild else None
+                        if not ch:
+                            ok = False
+            if ok:
+                healthy += 1
+        total += len(subs)
+        total_ok += healthy
+        icon = "🟢" if healthy == len(subs) else ("🟡" if healthy > 0 else "🔴" if len(subs) else "⚪")
+        # try to get group label
+        glabel = spec.get("label", gkey)
+        lines.append(f"{icon} **{glabel}** — {healthy}/{len(subs)}")
+    overall = "🟢 HEALTHY" if total_ok == total and total else ("🟡 DEGRADED" if total_ok else "🔴 BROKEN")
+    embed = discord.Embed(title="🩺 MIRO SYSTEM HEALTH", description="\n".join(lines) + f"\n\n**Overall: {total_ok}/{total} {overall}**", color=discord.Color.blue())
+    embed.set_footer(text="Click a system via /configpanel <system> to open its control plane")
+    return embed
+
+
 # --------------------------------------------------------------------------- #
 # Entry point                                                                  #
 # --------------------------------------------------------------------------- #

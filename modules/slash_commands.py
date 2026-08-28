@@ -55,11 +55,17 @@ class SlashCommands(commands.Cog):
         app_commands.Choice(name="⚙️ Automation (Auto-Responder/Roles/Starboard)", value="automation"),
         app_commands.Choice(name="👮 Staff Management (Shifts/Reviews/Promotions/Applications)", value="staff_management"),
         app_commands.Choice(name="🤖 Miro AI (Engine/Chat/Health)", value="ai"),
+        app_commands.Choice(name="🩺 Global Health", value="health"),
     ])
     async def configpanel(self, interaction: discord.Interaction, system: str):
         """Open the unified configuration panel for a system group."""
         if not interaction.guild:
             return await interaction.response.send_message("This command only works in servers.", ephemeral=True)
+        if system == "health":
+            await interaction.response.defer(ephemeral=True)
+            from modules.system_panels import build_global_health_embed
+            embed = build_global_health_embed(self.bot, interaction.guild)
+            return await interaction.followup.send(embed=embed, ephemeral=True)
         resolved = self.LEGACY_PANEL_ALIASES.get(system, system)
         # Panel construction reads server data — defer so Discord never times out
         await interaction.response.defer(ephemeral=True)

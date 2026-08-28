@@ -94,11 +94,39 @@ class SystemInstaller:
                 dm.update_guild_data(guild.id, cap.config_key, cfg)
             ok = len(report["failed"]) == 0
             return {"ok": ok, "report": report}
-        # generic fallback: ensure at least enabled
+        # Generic fallback: ensure enabled + try to heal missing channel/role from SYSTEM_GROUPS settings
+        try:
+            from modules.system_panels import SYSTEM_GROUPS
+            for g in SYSTEM_GROUPS.values():
+                for s in g["subsystems"]:
+                    if s["key"] == key:
+                        for setting in s.get("settings", []):
+                            if setting.get("type") == "channel":
+                                ck = setting.get("key")
+                                ch = self.rm.resolve_channel(guild, cfg.get(ck))
+                                if not ch and setting.get("key"):
+                                    # try to create named channel heuristically
+                                    new_ch = await self.rm.create_channel(guild, ck.replace("_","-"))
+                                    if new_ch:
+                                        cfg[ck] = str(new_ch.id)
+                                        report["created"].append(ck)
+                            if setting.get("type") == "role":
+                                rk = setting.get("key")
+                                r = self.rm.resolve_role(guild, cfg.get(rk))
+                                if not r and rk:
+                                    new_r = await self.rm.create_role(guild, rk.replace("_"," ").title())
+                                    if new_r:
+                                        cfg[rk] = str(new_r.id)
+                                        report["created"].append(rk)
+                        break
+        except Exception:
+            pass
         if not cfg.get("enabled"):
             cfg["enabled"] = True
-            dm.update_guild_data(guild.id, cap.config_key, cfg)
-        return {"ok": True, "report": report}
+            report["created"].append("enabled")
+        dm.update_guild_data(guild.id, cap.config_key, cfg)
+        ok = len(report["failed"]) == 0
+        return {"ok": ok, "report": report}
 
     async def test(self, guild: discord.Guild, key: str) -> dict:
         cap = get_capability(key)

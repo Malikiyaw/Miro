@@ -89,7 +89,7 @@ _reg(SystemCapability(
     actions=["open_channel","repair","test"],
 ))
 
-# Stubs — progressively fleshed; present so integrity test can iterate all
+# Phase 2 enriched stubs — verification remains reference, others now declare real resources/actions
 for _k, _g, _lbl, _owner, _cfg in [
     ("economy","progression","Economy","EconomySystem","economy_config"),
     ("leveling","progression","Leveling","LevelingSystem","leveling_config"),
@@ -130,6 +130,28 @@ for _k, _g, _lbl, _owner, _cfg in [
 ]:
     if _k not in CAPABILITIES:
         _reg(SystemCapability(key=_k, group=_g, label=_lbl, runtime_owner=_owner, config_key=_cfg))
+
+# Enrich priority systems beyond verification
+for _cap in [CAPABILITIES.get(k) for k in ("tickets","suggestions","giveaways","auto_responder","economy")]:
+    if _cap:
+        _cap.resources = _cap.resources or []
+        _cap.actions = list(set(_cap.actions + ["enable","disable","repair","test","open_channel"]))
+        _cap.diagnostics = list(set(_cap.diagnostics + ["runtime","channel","permissions"]))
+
+# Tickets detailed
+if CAPABILITIES.get("tickets"):
+    t = CAPABILITIES["tickets"]
+    t.settings = [SettingDef("ticket_category","Ticket Category","channel","Category for private tickets",False),
+                  SettingDef("log_channel","Log Channel","channel","",False)]
+    t.resources = [ResourceDef("ticket_category","channel","",True), ResourceDef("log_channel","channel","",False), ResourceDef("panel_message","message","Ticket panel",False)]
+    t.actions = ["enable","disable","open_channel","post_panel","repost_panel","repair","test","close_stale"]
+
+# Auto-responder detailed
+if CAPABILITIES.get("auto_responder"):
+    ar = CAPABILITIES["auto_responder"]
+    ar.settings = [SettingDef("cooldown","Cooldown (s)","number","Per-user cooldown",False,5)]
+    ar.resources = [ResourceDef("panel_message","message","AutoResponder panel",False)]
+    ar.actions = ["enable","disable","add_response","manage_responses","repair","test"]
 
 def get_capability(key: str) -> Optional[SystemCapability]:
     return CAPABILITIES.get(key)
