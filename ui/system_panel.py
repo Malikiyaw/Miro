@@ -122,6 +122,13 @@ class SystemPanelView(discord.ui.View):
             self._audit(action, user_id, success=False, detail=f"denied: {why}")
             return await self._deny(interaction, why, action)
 
+        # 3b. ack within 3s so heavy work never times out (ephemeral for panels)
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=ephemeral_success)
+            except Exception:
+                pass
+
         # 4-6. real backend call (work persists via dm) + audit with before/after diff
         error_text = ""
         result = None

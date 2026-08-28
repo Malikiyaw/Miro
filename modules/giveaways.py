@@ -23,12 +23,27 @@ class GiveawaySystem:
 
     async def create_giveaway(self, interaction, prize: str, duration: int, winners: int = 1):
         """Create a new giveaway."""
+        # ensure ack within 3s (defer already done by slash wrapper, but handle direct calls)
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:
+                pass
+        # helper to reply via followup if deferred else response
+        async def _reply(msg, ep=True):
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(msg, ephemeral=ep)
+                else:
+                    await interaction.response.send_message(msg, ephemeral=ep)
+            except Exception:
+                pass
         config = dm.get_guild_data(interaction.guild.id, "giveaways_config", {})
         if not config.get("enabled", False):
-            return await interaction.response.send_message("❌ Giveaways system is disabled.", ephemeral=True)
+            return await _reply("❌ Giveaways system is disabled.", True)
 
         if duration < 60 or duration > 604800:  # 1 minute to 1 week
-            return await interaction.response.send_message("❌ Duration must be between 1 minute and 1 week.", ephemeral=True)
+            return await _reply("❌ Duration must be between 1 minute and 1 week.", True)
 
         end_time = time.time() + duration
 
@@ -67,7 +82,7 @@ class GiveawaySystem:
         from task_scheduler import task_scheduler
         task_scheduler.schedule_task(end_time, self.end_giveaway, giveaway_data)
 
-        await interaction.response.send_message("✅ Giveaway created!", ephemeral=True)
+        await _reply("✅ Giveaway created!", True)
 
     async def enter_giveaway(self, interaction, message_id: int):
         """Enter a user into a giveaway."""

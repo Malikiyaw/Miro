@@ -442,16 +442,17 @@ class CoreCommands(commands.Cog):
     @config.command(name="prefix", description="Set the server command prefix")
     @app_commands.describe(prefix="New prefix character (max 5 chars)")
     async def config_prefix(self, interaction: discord.Interaction, prefix: str):
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:
+                pass
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("Only Administrators can change configuration.", ephemeral=True)
-            return
-            
+            return await interaction.followup.send("Only Administrators can change configuration.", ephemeral=True)
         if len(prefix) > 5:
-            await interaction.response.send_message("❌ Prefix must be 5 characters or less.", ephemeral=True)
-            return
-            
+            return await interaction.followup.send("❌ Prefix must be 5 characters or less.", ephemeral=True)
         dm.update_guild_data(interaction.guild.id, "prefix", prefix)
-        await interaction.response.send_message(f"✅ Server prefix set to **{prefix}**.", ephemeral=True)
+        await interaction.followup.send(f"✅ Server prefix set to **{prefix}**.", ephemeral=True)
 
     @config.command(name="sync", description="Force sync slash commands (Admin only)")
     async def config_sync(self, interaction: discord.Interaction):
@@ -469,13 +470,15 @@ class CoreCommands(commands.Cog):
     @config.command(name="depth", description="Set memory depth")
     @app_commands.describe(depth="Number of messages to remember (5-100)")
     async def config_depth(self, interaction: discord.Interaction, depth: int):
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:
+                pass
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("Only Administrators can change configuration.", ephemeral=True)
-            return
-            
+            return await interaction.followup.send("Only Administrators can change configuration.", ephemeral=True)
         if depth < 5 or depth > 200:
-            await interaction.response.send_message("❌ Depth must be between 5 and 200.", ephemeral=True)
-            return
+            return await interaction.followup.send("❌ Depth must be between 5 and 200.", ephemeral=True)
 
         from core.guild_ai_config import GuildAIConfig
         cfg = GuildAIConfig.load(interaction.guild.id)
@@ -507,34 +510,41 @@ class CoreCommands(commands.Cog):
                             _os.replace(tmp, path)
                 except Exception:
                     pass
-        await interaction.response.send_message(f"✅ Memory depth set to **{depth}** (stored in ai_config). Restart not required.", ephemeral=True)
+        await interaction.followup.send(f"✅ Memory depth set to **{depth}** (stored in ai_config). Restart not required.", ephemeral=True)
 
     @app_commands.command(name="disable", description="Disable a bot feature or scheduled task")
     @app_commands.describe(feature="Feature or task to disable")
     async def disable_command(self, interaction: discord.Interaction, feature: str):
         """Disable a feature or scheduled task"""
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:
+                pass
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("Only Administrators can disable features.", ephemeral=True)
-            return
+            return await interaction.followup.send("Only Administrators can disable features.", ephemeral=True)
 
         # Check for scheduled tasks
         tasks = dm.load_json("ai_scheduled_tasks", default={})
         if feature in tasks and tasks[feature].get("guild_id") == interaction.guild.id:
             tasks[feature]["enabled"] = False
             dm.save_json("ai_scheduled_tasks", tasks)
-            await interaction.response.send_message(f"✅ Disabled scheduled task: **{feature}**", ephemeral=True)
+            await interaction.followup.send(f"✅ Disabled scheduled task: **{feature}**", ephemeral=True)
             return
 
         # Check for generic modules
         modules = ["leveling", "economy", "starboard", "anti_raid", "auto_publisher", "auto_announcer", "welcome"]
         if feature.lower() in modules:
             dm.update_guild_data(interaction.guild.id, f"{feature.lower()}_enabled", False)
-            await interaction.response.send_message(f"✅ Disabled module: **{feature}**", ephemeral=True)
+            await interaction.followup.send(f"✅ Disabled module: **{feature}**", ephemeral=True)
             # Update live status embed
-            await self.bot.get_cog('AutoSetup').update_system_status_embed(interaction.guild.id)
+            try:
+                await self.bot.get_cog('AutoSetup').update_system_status_embed(interaction.guild.id)
+            except Exception:
+                pass
             return
 
-        await interaction.response.send_message(f"❌ Feature or task '**{feature}**' not found.", ephemeral=True)
+        await interaction.followup.send(f"❌ Feature or task '**{feature}**' not found.", ephemeral=True)
 
 
 

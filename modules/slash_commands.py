@@ -20,6 +20,11 @@ class SlashCommands(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def autosetup(self, interaction: discord.Interaction):
         """Start the auto-setup process."""
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:
+                pass
         await self.bot.auto_setup.start_setup(interaction)
 
     # Legacy per-system names -> unified group keys (backward compatibility)
@@ -339,71 +344,107 @@ class SlashCommands(commands.Cog):
     async def automations(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("This command only works in servers.", ephemeral=True)
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:
+                pass
         from modules.automation_manager import AutomationManagerView
         view = AutomationManagerView(self.bot, interaction.user.id, interaction.guild.id)
         embed = view.build_embed()
         if not view._names():
-            return await interaction.response.send_message(
+            return await interaction.followup.send(
                 "ℹ️ No automations yet. Ask the AI: `/bot create an automation that posts daily stats at 9am`",
                 ephemeral=True)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-# Economy commands
+# Economy commands — all defer within 3s before DB/role work to avoid timeout
+    async def _economy_defer(self, interaction):
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:
+                pass
+        else:
+            return
+        # after defer, handlers that still call response.send_message would raise AlreadyResponded;
+        # patch to followup so legacy handlers keep working
+        try:
+            orig = interaction.response.send_message
+            async def _patched(*a, **k):
+                return await interaction.followup.send(*a, **k)
+            interaction.response.send_message = _patched  # type: ignore
+        except Exception:
+            pass
+
     @app_commands.command(name="balance", description="Check your coin balance")
     async def balance(self, interaction: discord.Interaction):
+        await self._economy_defer(interaction)
         await self.bot.economy.balance(interaction)
 
     @app_commands.command(name="daily", description="Claim your daily coins")
     async def daily(self, interaction: discord.Interaction):
+        await self._economy_defer(interaction)
         await self.bot.economy.daily(interaction)
 
     @app_commands.command(name="work", description="Work for coins")
     async def work(self, interaction: discord.Interaction):
+        await self._economy_defer(interaction)
         await self.bot.economy.work(interaction)
 
     @app_commands.command(name="transfer", description="Transfer coins to another user")
     @app_commands.describe(user="User to transfer to", amount="Amount of coins")
     async def transfer(self, interaction: discord.Interaction, user: discord.Member, amount: int):
+        await self._economy_defer(interaction)
         await self.bot.economy.transfer(interaction, user, amount)
 
     @app_commands.command(name="shop", description="Browse the server shop")
     async def shop(self, interaction: discord.Interaction):
+        await self._economy_defer(interaction)
         await self.bot.economy.shop(interaction)
 
     @app_commands.command(name="buy", description="Buy an item from the shop")
     @app_commands.describe(item="Name of the item to buy")
     async def buy(self, interaction: discord.Interaction, item: str):
+        await self._economy_defer(interaction)
         await self.bot.economy.buy(interaction, item)
 
     @app_commands.command(name="leaderboard", description="View economy leaderboard")
     async def leaderboard(self, interaction: discord.Interaction):
+        await self._economy_defer(interaction)
         await self.bot.economy.leaderboard(interaction)
 
     @app_commands.command(name="challenge", description="View daily challenge")
     async def challenge(self, interaction: discord.Interaction):
+        await self._economy_defer(interaction)
         await self.bot.economy.challenge(interaction)
 
-    # Leveling commands
+    # Leveling commands (deferred to avoid 3s timeout)
     @app_commands.command(name="rank", description="Check your leveling rank")
     async def rank(self, interaction: discord.Interaction):
+        await self._economy_defer(interaction)
         await self.bot.leveling.rank(interaction)
 
     @app_commands.command(name="lvlleaderboard", description="View leveling leaderboard")
     async def lvlleaderboard(self, interaction: discord.Interaction):
+        await self._economy_defer(interaction)
         await self.bot.leveling.leaderboard(interaction)
 
     @app_commands.command(name="rewards", description="View level rewards")
     async def rewards(self, interaction: discord.Interaction):
+        await self._economy_defer(interaction)
         await self.bot.leveling.rewards(interaction)
 
     # Ticket commands
     @app_commands.command(name="ticket", description="Create a new support ticket")
     async def ticket(self, interaction: discord.Interaction):
+        await self._economy_defer(interaction)
         await self.bot.tickets.create_ticket(interaction)
 
     # Suggestion commands
     @app_commands.command(name="suggest", description="Create a new suggestion")
     async def suggest(self, interaction: discord.Interaction):
+        await self._economy_defer(interaction)
         await self.bot.suggestions.create_suggestion(interaction)
 
     # Giveaway commands
@@ -411,16 +452,19 @@ class SlashCommands(commands.Cog):
     @app_commands.describe(prize="What to give away", duration="Duration in seconds", winners="Number of winners")
     @app_commands.checks.has_permissions(administrator=True)
     async def giveaway(self, interaction: discord.Interaction, prize: str, duration: int, winners: int = 1):
+        await self._economy_defer(interaction)
         await self.bot.giveaways.create_giveaway(interaction, prize, duration, winners)
 
     # Reminder commands
     @app_commands.command(name="remind", description="Set a reminder")
     @app_commands.describe(message="Reminder message", time="Time in seconds")
     async def remind(self, interaction: discord.Interaction, message: str, time: int):
+        await self._economy_defer(interaction)
         await self.bot.reminders.create_reminder(interaction, message, time, False)
 
     @app_commands.command(name="reminders", description="List your reminders")
     async def reminders(self, interaction: discord.Interaction):
+        await self._economy_defer(interaction)
         await self.bot.reminders.list_reminders(interaction)
 
     # Warning commands
@@ -433,11 +477,13 @@ class SlashCommands(commands.Cog):
         app_commands.Choice(name="High", value="high")
     ])
     async def warn(self, interaction: discord.Interaction, user: discord.Member, reason: str, severity: str = "medium"):
+        await self._economy_defer(interaction)
         await self.bot.warnings.warn_user(interaction, user, reason, severity)
 
     @app_commands.command(name="warnings", description="View user warnings")
     @app_commands.describe(user="User to check (optional)")
     async def warnings(self, interaction: discord.Interaction, user: discord.Member = None):
+        await self._economy_defer(interaction)
         await self.bot.warnings.get_user_warnings(interaction, user or interaction.user)
 
     # Staff shift commands
@@ -450,6 +496,7 @@ class SlashCommands(commands.Cog):
         app_commands.Choice(name="Break End", value="break_end")
     ])
     async def shift(self, interaction: discord.Interaction, action: str):
+        await self._economy_defer(interaction)
         if action == "start":
             await self.bot.staff_shifts.start_shift(interaction)
         elif action == "end":
@@ -461,16 +508,19 @@ class SlashCommands(commands.Cog):
 
     @app_commands.command(name="myshifts", description="View your shift history")
     async def myshifts(self, interaction: discord.Interaction):
+        await self._economy_defer(interaction)
         await self.bot.staff_shifts.get_my_shifts(interaction)
 
     # Application commands
     @app_commands.command(name="apply", description="Apply for staff position")
     async def apply(self, interaction: discord.Interaction):
+        await self._economy_defer(interaction)
         await self.bot.applications.create_application(interaction)
 
     # Appeal commands
     @app_commands.command(name="appeal", description="Appeal a warning")
     async def appeal(self, interaction: discord.Interaction):
+        await self._economy_defer(interaction)
         await self.bot.appeals.create_appeal(interaction)
 
 async def setup(bot):
