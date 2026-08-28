@@ -106,12 +106,20 @@ class SystemPanelView(discord.ui.View):
         if self._timed_out:
             return await self._deny(interaction, PANEL_EXPIRED_TEXT, action)
 
+        # 1b. immediate ack within 3s — before any blocking check (fixes Panel section... timeout)
+        if not interaction.response.is_done():
+            try:
+                # for component interactions, defer thinking preserves ephemeral followup path
+                await interaction.response.defer(ephemeral=ephemeral_success)
+            except Exception:
+                pass
+
         # 2. double-click protection: one execution per action at a time
         if action in self._inflight:
             return await self._deny(interaction, "⏳ Already working on that — one moment.", action)
         self._inflight.add(action)
 
-        # 3. central permission check
+        # 3. central permission check (now after defer, so not counted to 3s)
         allowed, why = access_control.check(
             interaction,
             level if level is not None else self.required_level,
@@ -121,13 +129,6 @@ class SystemPanelView(discord.ui.View):
             self._inflight.discard(action)
             self._audit(action, user_id, success=False, detail=f"denied: {why}")
             return await self._deny(interaction, why, action)
-
-        # 3b. ack within 3s so heavy work never times out (ephemeral for panels)
-        if not interaction.response.is_done():
-            try:
-                await interaction.response.defer(ephemeral=ephemeral_success)
-            except Exception:
-                pass
 
         # 4-6. real backend call (work persists via dm) + audit with before/after diff
         error_text = ""
