@@ -27,7 +27,7 @@ class SystemPanelView(discord.ui.View):
 
     def __init__(self, bot, guild: discord.Guild, author_id: int,
                  required_level: AccessLevel = AccessLevel.ADMIN,
-                 system_config: Optional[dict] = None, timeout: float = 300):
+                 system_config: Optional[dict] = None, timeout: float = 3600):
         super().__init__(timeout=timeout)
         self.bot = bot
         self.guild = guild

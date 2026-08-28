@@ -477,7 +477,7 @@ class GroupPanelView(SystemPanelView):
     def __init__(self, bot, interaction: discord.Interaction, group_key: str):
         spec = SYSTEM_GROUPS[group_key]
         super().__init__(bot, interaction.guild, interaction.user.id,
-                         required_level=AccessLevel.ADMIN, timeout=300)
+                         required_level=AccessLevel.ADMIN, timeout=3600)
         self.group_key = group_key
         self.spec = spec
         self.tab = "overview"

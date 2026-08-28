@@ -309,8 +309,20 @@ class AutoSetupSystem:
 
     async def start_setup(self, interaction):
         """Start the auto-setup process."""
+        # defer-aware helper — slash wrapper now defers within 3s before calling us
+        async def _send(**kw):
+            try:
+                if interaction.response.is_done():
+                    return await interaction.followup.send(**kw)
+                return await interaction.response.send_message(**kw)
+            except Exception as e:
+                try:
+                    return await interaction.followup.send(**kw)
+                except Exception:
+                    logger.error(f"start_setup send failed: {e}")
+                    raise
         if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("❌ Only administrators can use auto-setup.", ephemeral=True)
+            return await _send(content="❌ Only administrators can use auto-setup.", ephemeral=True)
 
         gid = str(interaction.guild.id)
 
@@ -331,9 +343,7 @@ class AutoSetupSystem:
                 ),
                 color=discord.Color.gold(),
             )
-            await interaction.response.send_message(
-                embed=embed, view=ResumeSetupView(self, interaction.guild.id, remaining),
-                ephemeral=True)
+            await _send(embed=embed, view=ResumeSetupView(self, interaction.guild.id, remaining), ephemeral=True)
             return
 
         if completed:
@@ -351,7 +361,7 @@ class AutoSetupSystem:
                 color=discord.Color.green(),
             )
             view = AlreadySetupView(self) if n_created else None
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            await _send(embed=embed, view=view, ephemeral=True)
             return
 
         # Fresh run: show pre-flight report up front
@@ -372,7 +382,7 @@ class AutoSetupSystem:
             color=color,
         )
         view = SetupStartView(self, preflight_ok=report.ok)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await _send(embed=embed, view=view, ephemeral=True)
 
     async def begin_system_selection(self, interaction):
         """Show system category selection."""
