@@ -1013,6 +1013,12 @@ class PromotionReviewView(discord.ui.View):
         await self._update_message(interaction, data)
 
     async def _update_message(self, interaction, data):
+        if not interaction.message.embeds:
+            # Defensive: re-render the embed from the stored data instead of
+            # assuming the parent message still has the original review embed.
+            return await interaction.response.edit_message(
+                content="⚠️ This review message is no longer editable (original embed was lost).",
+                embed=None, view=self)
         embed = interaction.message.embeds[0]
 
         user_id = data.get("user_id") or self.user_id

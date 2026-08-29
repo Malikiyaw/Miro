@@ -87,6 +87,24 @@ _REQUIRED_PARAMS = {
     "send_dm": [("user_id", "user ID"), ("content", "message text")],
 }
 
+def _coerce_keywords(params: Dict[str, Any]) -> list:
+    """Pull keywords from any of the accepted locations and return a non-empty list or []."""
+    raw = params.get("keywords")
+    if not raw:
+        trigger = params.get("trigger")
+        if isinstance(trigger, dict):
+            raw = trigger.get("keywords")
+    if not raw:
+        filters = params.get("filters")
+        if isinstance(filters, dict):
+            raw = filters.get("keywords")
+    if isinstance(raw, str):
+        raw = [k.strip() for k in raw.split(",") if k.strip()]
+    if not isinstance(raw, list):
+        return []
+    return [str(k).strip() for k in raw if str(k).strip()]
+
+
 def validate_params(name: str, params: Dict[str, Any]) -> tuple:
     """Schema validation. Dependency-repairable calls are allowed through to the executor."""
     if name == "find_duplicate_channels":
@@ -103,4 +121,19 @@ def validate_params(name: str, params: Dict[str, Any]) -> tuple:
     elif name == "delete_role":
         if not (params.get("role_id") or params.get("role_name")):
             return False, "requires 'role_id' or 'role_name'"
+    elif name == "create_automation":
+        # Always require a name (server-side also auto-generates one, but a name
+        # in the call avoids collisions and matches the runtime contract).
+        if not (params.get("name") and str(params.get("name")).strip()):
+            return False, "requires 'name' (string) — the automation's identifier"
+        atype = str(params.get("type") or params.get("automation_type") or "scheduled_task").strip().lower()
+        if atype in ("event_trigger", "event"):
+            event = str(params.get("event") or "").strip().lower()
+            if event == "message_contains" and not _coerce_keywords(params):
+                return False, ("requires 'keywords' (array of strings or a comma-separated string) "
+                               "when type=event_trigger and event=message_contains. "
+                               "e.g. keywords=['hello','ping'] or keywords='hello, ping'.")
+        elif atype in ("auto_responder", "responder", "autoresponder", "trigger_role"):
+            if not _coerce_keywords(params):
+                return False, f"requires 'keywords' for type={atype} (e.g. keywords=['hi','hello'])."
     return True, ""
