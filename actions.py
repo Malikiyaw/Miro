@@ -4846,9 +4846,14 @@ class ActionHandler:
             return False, None
 
     async def action_add_reaction(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
-        """Adds emoji reaction to a message."""
+        """Adds emoji reaction to a message.
+
+        Resolution order: explicit message_id → most recent message in the
+        named/current channel. Never returns (False, None): every failure
+        path produces an error dict the executor can show to the agent.
+        """
         # Surface useful errors instead of returning (False, None).
-        sent_keys = sorted(k for k in (params or {}).keys() if k not in ("type", "properties", "trigger", "filters"))
+        sent_keys = sorted(k for k in (params or {}).keys() if k not in ("type", "properties", "trigger", "filters", "_auto_resolved_message_id"))
         hint = f" (sent keys: {sent_keys})" if sent_keys else ""
         channel_name = params.get("channel") or params.get("channel_name")
         message_id = params.get("message_id")
@@ -4857,27 +4862,35 @@ class ActionHandler:
         if not emoji or not isinstance(emoji, str) or not emoji.strip():
             return False, {"error": f"add_reaction: requires non-empty 'emoji' (string){hint}. "
                                     f"Do NOT nest emoji under 'properties' or 'type'."}
-        if message_id is None and not channel_name:
-            return False, {"error": f"add_reaction: requires 'message_id' or 'channel_name' to locate the message{hint}."}
 
         target_channel = None
         if channel_name:
             target_channel = discord.utils.get(interaction.guild.channels, name=channel_name) if interaction.guild else None
         if not target_channel:
             target_channel = interaction.channel
+        if target_channel is None:
+            return False, {"error": f"add_reaction: no channel resolved (channel_name={channel_name!r}, interaction.channel={getattr(interaction, 'channel', None)!r})"}
 
         try:
             msg = None
-            if message_id is not None:
+            if message_id is not None and not (isinstance(message_id, str) and not message_id.strip()):
                 try:
                     msg = await target_channel.fetch_message(message_id)
                 except Exception as fetch_err:
                     return False, {"error": f"add_reaction: could not fetch message {message_id} in {target_channel}: {fetch_err}"}
-            if msg:
-                await msg.add_reaction(emoji)
-            else:
-                return False, {"error": f"add_reaction: message not found (message_id={message_id}, channel={channel_name})"}
-            return True, {"emoji": emoji, "message_id": message_id}
+            if msg is None:
+                # No explicit message_id → use the most recent message in the channel.
+                try:
+                    async for recent in target_channel.history(limit=1):
+                        msg = recent
+                        break
+                except Exception as hist_err:
+                    return False, {"error": f"add_reaction: could not read channel history in {target_channel}: {hist_err}"}
+            if msg is None:
+                return False, {"error": f"add_reaction: no recent message found in {target_channel} to react to. "
+                                        f"Pass 'message_id' explicitly."}
+            await msg.add_reaction(emoji)
+            return True, {"emoji": emoji, "message_id": msg.id, "channel": getattr(target_channel, "name", None)}
         except discord.Forbidden:
             return False, {"error": "add_reaction: missing 'Add Reactions' permission"}
         except Exception as e:

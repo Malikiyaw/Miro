@@ -31,10 +31,16 @@ def needs_confirmation(actions: List[Dict[str, Any]]) -> bool:
 
 
 class AgentRuntime:
-    def __init__(self, bot, guild, user, *, max_steps: int = MAX_AGENT_STEPS, allow_dangerous: bool = False, on_progress: Optional[Callable[[str], Any]] = None, confirmed: bool = False):
+    def __init__(self, bot, guild, user, *, max_steps: int = MAX_AGENT_STEPS, allow_dangerous: bool = False, on_progress: Optional[Callable[[str], Any]] = None, confirmed: bool = False,
+                 message=None, channel=None):
         self.bot = bot
         self.guild = guild
         self.user = user
+        # Actor context: the message that triggered this run + the channel it came from.
+        # Used to (a) inform the planner and (b) auto-enrich tool parameters like
+        # add_reaction when the LLM omits message_id (the V9 screenshot bug).
+        self._trigger_message = message
+        self._trigger_channel = channel or (getattr(message, "channel", None) if message is not None else None)
         self.max_steps = max_steps
         self.allow_dangerous = allow_dangerous
         self.confirmed = confirmed
@@ -49,6 +55,9 @@ class AgentRuntime:
         self._nudges = 0
         self._max_plan_attempts = 3
         self._original_request = ""
+        # Cached actor context block so every planner turn in this run sees
+        # the same identity snapshot.
+        self._actor_context_cache: Optional[str] = None
         # Single source of truth for the progress board: reasoning lines and
         # verified observation records share one list so the board never shows
         # a duplicated "🤖 Miro Agent" header.
@@ -221,6 +230,23 @@ class AgentRuntime:
         except Exception as e:
             logger.debug(f"automation context injection failed: {e}")
 
+        # ACTOR CONTEXT: who is asking + which channel + which message triggered
+        # this run. Injected once, cached on the runtime so every planner turn
+        # in this run sees the same identity snapshot. Without this, the model
+        # guesses at message_id and the validator rejects add_reaction (the
+        # exact bug from the V9 screenshot).
+        try:
+            if self._actor_context_cache is None:
+                from agent.context import build_actor_context
+                self._actor_context_cache = build_actor_context(
+                    guild=self.guild, user=self.user,
+                    channel=self._trigger_channel, message=self._trigger_message,
+                ) or ""
+            if self._actor_context_cache:
+                messages.append({"role": "user", "content": self._actor_context_cache})
+        except Exception as e:
+            logger.debug(f"actor context injection failed: {e}")
+
         # SAME-CHANNEL MEMORY: inject prior conversation so short follow-ups
         # like "yes / proceed / do it again" resolve to the prior mutation.
         # ai_client also injects history, but explicit extra_messages helps the
@@ -365,6 +391,11 @@ class AgentRuntime:
                     continue
 
                 from agent.tools import validate_params
+                # RUNTIME DEFAULTS: the LLM should never have to invent IDs.
+                # The runtime auto-fills obvious defaults (current channel,
+                # triggering message) so the model only needs to say WHAT,
+                # never WHICH id.
+                params = self._enrich_defaults(name, params, interaction)
                 ok_params, why = validate_params(name, params)
                 if not ok_params:
                     receipt = Receipt(action=name, success=False, verified=False, error_type=ErrorType.INVALID_PARAMS, message=why, job_id=job.job_id, parameters=dict(params))
@@ -481,3 +512,34 @@ class AgentRuntime:
 
     def _original_intent_actionable(self) -> bool:
         return classify_request(self._original_request).execution_required
+
+    def _enrich_defaults(self, name: str, params: Dict[str, Any], interaction) -> Dict[str, Any]:
+        """V11 contract: the LLM never invents IDs. Fill obvious defaults
+        (current channel + triggering message) so a 1-emoji add_reaction
+        call with no target still resolves to a real Discord message.
+        """
+        if not isinstance(params, dict):
+            params = {}
+        # 1) Channel: any tool that accepts a channel reference can default
+        #    to the current channel. Resolve channel_name → channel_id so the
+        #    executor never has to look it up again.
+        channel = self._trigger_channel or (getattr(interaction, "channel", None) if interaction else None)
+        if channel is not None:
+            ch_id = getattr(channel, "id", None)
+            ch_name = getattr(channel, "name", None)
+            for k in ("channel_id",):
+                if k not in params and ch_id is not None:
+                    params[k] = ch_id
+            for k in ("channel_name", "channel"):
+                if k not in params and ch_name:
+                    params[k] = ch_name
+        # 2) add_reaction: prefer the message that TRIGGERED the run
+        #    (the LLM almost always means that one) when message_id is missing.
+        if name == "add_reaction":
+            mid = params.get("message_id")
+            needs_default = mid is None or (isinstance(mid, str) and not mid.strip())
+            if needs_default and self._trigger_message is not None and getattr(self._trigger_message, "id", None) is not None:
+                params["message_id"] = int(getattr(self._trigger_message, "id"))
+                # Stash a hint for the executor so it can show progress.
+                params.setdefault("_auto_resolved_message_id", True)
+        return params

@@ -18,7 +18,7 @@ class AgentHarness:
         try: install_on_bot(bot)
         except Exception as exc: logger.warning(f"[AGENT] native tool schema install failed: {exc}")
 
-    async def run(self,request,guild,user,*,interaction=None,initial_result=None,system_prompt="",on_progress=None):
+    async def run(self, request, guild, user, *, interaction=None, initial_result=None, system_prompt="", on_progress=None, message=None, channel=None):
         # History-aware classification: same guild/channel follow-ups like
         # "yes/proceed/do it" after "Discovery completed ... tell me to proceed"
         # must stay as MUTATION, not fall back to CHAT (screenshot bug).
@@ -55,6 +55,8 @@ class AgentHarness:
         allow_dangerous=bool(getattr(getattr(user,'guild_permissions',None),'administrator',False))
         kwargs={'allow_dangerous':allow_dangerous,'on_progress':on_progress}
         if self.max_steps is not None: kwargs['max_steps']=self.max_steps
+        if message is not None: kwargs['message']=message
+        if channel is not None: kwargs['channel']=channel
         runtime=AgentRuntime(self.bot,guild,user,**kwargs)
         safe_initial=None
         if isinstance(initial_result,dict):
@@ -87,7 +89,7 @@ class AgentHarness:
                 if progress_message is None: progress_message=await message.channel.send(text[:1900])
                 else: await progress_message.edit(content=text[:1900])
             except Exception as exc: logger.debug(f"V9 progress update failed: {exc}")
-        result=await self.run(message.content,message.guild,message.author,interaction=self._message_interaction(message),system_prompt=getattr(chat_channel,'system_prompt','') if chat_channel else '',on_progress=progress)
+        result=await self.run(message.content,message.guild,message.author,interaction=self._message_interaction(message),system_prompt=getattr(chat_channel,'system_prompt','') if chat_channel else '',on_progress=progress,message=message,channel=getattr(chat_channel, 'channel', None) or message.channel)
         if progress_message is not None and result.response is not None:
             try:
                 text=getattr(result.response,'text',None)

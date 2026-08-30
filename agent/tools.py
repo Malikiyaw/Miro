@@ -123,7 +123,7 @@ def validate_params(name: str, params: Dict[str, Any]) -> tuple:
             return False, "requires 'role_id' or 'role_name'"
     elif name == "add_reaction":
         # List the keys the model actually sent so it can self-correct.
-        sent_keys = sorted(k for k in params.keys() if k not in ("type", "properties", "trigger", "filters"))
+        sent_keys = sorted(k for k in params.keys() if k not in ("type", "properties", "trigger", "filters", "_auto_resolved_message_id"))
         hint = f" (sent keys: {sent_keys})" if sent_keys else ""
         emoji = params.get("emoji")
         if not emoji or not isinstance(emoji, str) or not emoji.strip():
@@ -137,7 +137,8 @@ def validate_params(name: str, params: Dict[str, Any]) -> tuple:
             return False
         message_id = params.get("message_id")
         if _is_blank(message_id) and not (params.get("channel_id") or params.get("channel_name")):
-            return False, (f"requires 'message_id' (or channel_id/channel_name to find the latest message){hint}.")
+            return False, ("requires 'message_id' OR 'channel_id'/'channel_name' "
+                           f"(with no message_id, the runtime reacts to the most recent message in that channel){hint}.")
     elif name == "create_automation":
         # Always require a name (server-side also auto-generates one, but a name
         # in the call avoids collisions and matches the runtime contract).
