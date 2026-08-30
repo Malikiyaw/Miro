@@ -81,11 +81,16 @@ _METHOD_PROFILE: Dict[str, Dict[str, Any]] = {
 
 
 def _profile_for(name: str) -> Dict[str, Any]:
-    """Pick the V11 metadata for a method name."""
-    # Longest-prefix wins.
+    """Pick the V11 metadata for a method name.
+
+    `name` is the raw attribute on the ActionHandler (e.g. `action_delete_channel`).
+    We strip the `action_` prefix and match the resulting tool name against
+    the profile table.
+    """
+    base = name[len("action_"):] if name.startswith("action_") else name
     candidates = sorted(_METHOD_PROFILE.items(), key=lambda kv: -len(kv[0]))
     for prefix, profile in candidates:
-        if name.startswith(prefix):
+        if base.startswith(prefix):
             return dict(profile)
     return dict(category=ToolCategory.AGENT, danger=DangerLevel.LOW, mutates=False,
                 idem=Idempotency.SAFE)
