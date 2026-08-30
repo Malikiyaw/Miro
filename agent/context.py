@@ -5,7 +5,7 @@ Before an actionable run, the runtime injects a concise SERVER STATE block
 (real data via ServerQueryEngine) so the model knows what it is operating on
 — server name, member count, channels with IDs, roles — instead of guessing.
 """
-from typing import Optional
+from typing import Optional, Any, Dict
 
 
 async def build_server_context(bot, guild) -> str:
@@ -156,3 +156,56 @@ async def build_automation_context(bot, guild) -> str:
         "creating a duplicate. If unsure what exists, call list_automations first."
     )
     return "\n".join(lines)
+
+
+def build_actor_context(*, guild=None, user=None, channel=None, message=None) -> str:
+    """Compact "who is asking + what channel + what message triggered this run".
+
+    Injected into the planner context so the model knows the actor and the
+    triggering message without guessing. The runtime ALSO uses this same
+    object to auto-enrich tool parameters (e.g. add_reaction defaults to the
+    most recent message in this channel when the LLM omits message_id).
+    """
+    if guild is None and user is None and channel is None and message is None:
+        return ""
+
+    def _id(o):
+        return getattr(o, "id", None) or (o.get("id") if isinstance(o, dict) else None)
+
+    def _name(o):
+        return getattr(o, "name", None) or (o.get("name") if isinstance(o, dict) else "")
+
+    lines: list[str] = ["ACTOR CONTEXT (live):"]
+    if user is not None:
+        lines.append(f"  user: id={_id(user)} name={_name(user) or ''}")
+    if guild is not None:
+        lines.append(f"  guild: id={_id(guild)} name={_name(guild) or ''}")
+    if channel is not None:
+        cid = _id(channel)
+        cname = _name(channel)
+        if cid is not None:
+            lines.append(f"  channel: id={cid} name={cname or ''} (use channel_id={cid} to target the current channel)")
+    if message is not None:
+        mid = _id(message)
+        if mid is not None:
+            author = getattr(message, "author", None)
+            author_id = _id(author) if author is not None else None
+            lines.append(
+                f"  message: id={mid} author_id={author_id} "
+                f"(use message_id={mid} to react/edit/delete THIS message; "
+                f"or omit message_id to react to the most recent message in channel_id)"
+            )
+    return "\n".join(lines)
+
+
+def resolve_default_target_message(*, channel, message=None):
+    """Pick the message the LLM most likely meant when it didn't say.
+
+    Priority: the triggering message (if any) → the most recent message in
+    the channel. Returns (channel, message_id) or (None, None).
+    """
+    if message is not None and getattr(message, "id", None):
+        return channel, int(getattr(message, "id"))
+    if channel is None:
+        return None, None
+    return channel, None  # caller will fetch latest.
