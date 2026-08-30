@@ -121,6 +121,23 @@ def validate_params(name: str, params: Dict[str, Any]) -> tuple:
     elif name == "delete_role":
         if not (params.get("role_id") or params.get("role_name")):
             return False, "requires 'role_id' or 'role_name'"
+    elif name == "add_reaction":
+        # List the keys the model actually sent so it can self-correct.
+        sent_keys = sorted(k for k in params.keys() if k not in ("type", "properties", "trigger", "filters"))
+        hint = f" (sent keys: {sent_keys})" if sent_keys else ""
+        emoji = params.get("emoji")
+        if not emoji or not isinstance(emoji, str) or not emoji.strip():
+            return False, (f"requires non-empty 'emoji' (string){hint}. "
+                           f"Do NOT nest emoji under 'properties' or 'type'.")
+        def _is_blank(v: Any) -> bool:
+            if v is None:
+                return True
+            if isinstance(v, str) and not v.strip():
+                return True
+            return False
+        message_id = params.get("message_id")
+        if _is_blank(message_id) and not (params.get("channel_id") or params.get("channel_name")):
+            return False, (f"requires 'message_id' (or channel_id/channel_name to find the latest message){hint}.")
     elif name == "create_automation":
         # Always require a name (server-side also auto-generates one, but a name
         # in the call avoids collisions and matches the runtime contract).
@@ -133,7 +150,38 @@ def validate_params(name: str, params: Dict[str, Any]) -> tuple:
                 return False, ("requires 'keywords' (array of strings or a comma-separated string) "
                                "when type=event_trigger and event=message_contains. "
                                "e.g. keywords=['hello','ping'] or keywords='hello, ping'.")
+            # Side-effecting events must declare at least one action; otherwise
+            # the automation would fire but produce no observable behaviour.
+            _SID_EFFECT_EVENTS = {
+                "message_contains", "reaction_added", "member_joined",
+                "member_left", "voice_joined",
+            }
+            if event in _SID_EFFECT_EVENTS:
+                actions = _coerce_actions(params)
+                if not actions:
+                    return False, (f"requires non-empty 'actions' list for type=event_trigger "
+                                   f"and event={event}. The trigger will fire, but without "
+                                   f"actions it has no side effects. "
+                                   f"e.g. actions=[{{name:'send_message', parameters:{{content:'Hi'}}}}].")
         elif atype in ("auto_responder", "responder", "autoresponder", "trigger_role"):
             if not _coerce_keywords(params):
                 return False, f"requires 'keywords' for type={atype} (e.g. keywords=['hi','hello'])."
     return True, ""
+
+
+def _coerce_actions(params: Dict[str, Any]) -> list:
+    raw = params.get("actions")
+    if raw is None:
+        # Check nested under trigger/actions too
+        trig = params.get("trigger")
+        if isinstance(trig, dict):
+            raw = trig.get("actions")
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for a in raw:
+        if isinstance(a, dict) and a.get("name"):
+            out.append(a)
+        elif isinstance(a, str) and a:
+            out.append({"name": a})
+    return out

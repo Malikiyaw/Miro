@@ -13,6 +13,19 @@ class Observer:
         marker = "✅" if obs.success and obs.verified else ("⚠️" if obs.success else "❌")
         line = f"{marker} `{obs.tool}`"
         if not obs.success and obs.detail: line += f" — {obs.detail[:120]}"
+        # Honest observer: don't show ✅ for a no-op event_trigger automation.
+        if obs.success and obs.tool == "create_automation":
+            params = obs.params or (obs.receipt.parameters if obs.receipt else {}) or {}
+            atype = str(params.get("type") or params.get("automation_type") or "").lower()
+            if atype in ("event_trigger", "event"):
+                actions = params.get("actions")
+                if isinstance(actions, list) and len(actions) > 0:
+                    names = [a.get("name", "?") if isinstance(a, dict) else str(a) for a in actions]
+                    line += f" (actions=[{', '.join(names)}])"
+                else:
+                    marker = "⚠️"
+                    line = (f"{marker} `{obs.tool}` — no actions: trigger will fire but "
+                            f"produce no side effects")
         self.history.append(line)
         return line
 

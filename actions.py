@@ -4847,27 +4847,42 @@ class ActionHandler:
 
     async def action_add_reaction(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
         """Adds emoji reaction to a message."""
+        # Surface useful errors instead of returning (False, None).
+        sent_keys = sorted(k for k in (params or {}).keys() if k not in ("type", "properties", "trigger", "filters"))
+        hint = f" (sent keys: {sent_keys})" if sent_keys else ""
         channel_name = params.get("channel") or params.get("channel_name")
         message_id = params.get("message_id")
         emoji = params.get("emoji", "")
 
-        if not emoji:
-            return False, None
+        if not emoji or not isinstance(emoji, str) or not emoji.strip():
+            return False, {"error": f"add_reaction: requires non-empty 'emoji' (string){hint}. "
+                                    f"Do NOT nest emoji under 'properties' or 'type'."}
+        if message_id is None and not channel_name:
+            return False, {"error": f"add_reaction: requires 'message_id' or 'channel_name' to locate the message{hint}."}
 
         target_channel = None
         if channel_name:
-            target_channel = discord.utils.get(interaction.guild.channels, name=channel_name)
+            target_channel = discord.utils.get(interaction.guild.channels, name=channel_name) if interaction.guild else None
         if not target_channel:
             target_channel = interaction.channel
 
         try:
-            msg = await target_channel.fetch_message(message_id) if message_id else None
+            msg = None
+            if message_id is not None:
+                try:
+                    msg = await target_channel.fetch_message(message_id)
+                except Exception as fetch_err:
+                    return False, {"error": f"add_reaction: could not fetch message {message_id} in {target_channel}: {fetch_err}"}
             if msg:
                 await msg.add_reaction(emoji)
-            return True, {"emoji": emoji}
+            else:
+                return False, {"error": f"add_reaction: message not found (message_id={message_id}, channel={channel_name})"}
+            return True, {"emoji": emoji, "message_id": message_id}
+        except discord.Forbidden:
+            return False, {"error": "add_reaction: missing 'Add Reactions' permission"}
         except Exception as e:
             logger.error(f"Error adding reaction: {e}")
-            return False, None
+            return False, {"error": f"add_reaction: unexpected error: {e}"}
 
     async def action_edit_channel_name(self, interaction: discord.Interaction, params: Dict[str, Any]) -> Tuple[bool, Optional[Dict]]:
         """Renames a channel."""
