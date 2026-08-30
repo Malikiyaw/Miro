@@ -4868,8 +4868,11 @@ class ActionHandler:
             target_channel = discord.utils.get(interaction.guild.channels, name=channel_name) if interaction.guild else None
         if not target_channel:
             target_channel = interaction.channel
-        if target_channel is None:
-            return False, {"error": f"add_reaction: no channel resolved (channel_name={channel_name!r}, interaction.channel={getattr(interaction, 'channel', None)!r})"}
+        if target_channel is None or not hasattr(target_channel, "fetch_message"):
+            # No usable Discord channel context. Tell the caller which id is required.
+            return False, {"error": (f"add_reaction: no usable channel resolved "
+                                     f"(channel_name={channel_name!r}); "
+                                     f"pass 'message_id' so the runtime can find a target.")}
 
         try:
             msg = None
@@ -4880,6 +4883,10 @@ class ActionHandler:
                     return False, {"error": f"add_reaction: could not fetch message {message_id} in {target_channel}: {fetch_err}"}
             if msg is None:
                 # No explicit message_id → use the most recent message in the channel.
+                if not hasattr(target_channel, "history"):
+                    return False, {"error": (f"add_reaction: no message_id and the channel "
+                                             f"({target_channel!r}) has no message history; "
+                                             f"pass 'message_id' explicitly.")}
                 try:
                     async for recent in target_channel.history(limit=1):
                         msg = recent
