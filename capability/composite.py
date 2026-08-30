@@ -39,11 +39,11 @@ class CompositeTools:
         self._registry = registry
         self._executor = executor  # callable(tool_name, params) → ToolResult
 
-    def _call(self, name: str, **params: Any) -> ToolResult:
+    def _call(self, tool_name: str, **params: Any) -> ToolResult:
         if self._executor is None:
-            return ToolResult.fail(f"no executor bound for composite {name}",
+            return ToolResult.fail(f"no executor bound for composite {tool_name}",
                                   cls_err=__import__("capability.contract", fromlist=["ErrorClass"]).ErrorClass.UNKNOWN)
-        return self._executor(name, params)
+        return self._executor(tool_name, params)
 
     def setup_verification(self, *, channel_name: str = "verify",
                            role_name: str = "Verified",
@@ -126,5 +126,5 @@ def repair_system(system: str, registry, executor=None) -> CompositeResult:
     return CompositeTools(registry, executor).repair_system(system=system)
 
 
-def test_system(system: str, registry, executor=None) -> CompositeResult:
+def run_system_test(system: str, registry, executor=None) -> CompositeResult:
     return CompositeTools(registry, executor).test_system(system=system)

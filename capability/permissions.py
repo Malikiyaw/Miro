@@ -136,32 +136,49 @@ class RoleHierarchyEngine:
 class ChannelPermissionEngine:
     """Effective permissions = guild ⊕ role overwrites ⊕ member overwrites.
 
-    Bitwise, so the test suite can compose exact cases without Discord.
+    Discord semantic: each overwrite layer produces (allow, deny); the
+    final value is `guild & ~(role_deny | member_deny) | role_allow | member_allow`.
     """
 
     def __init__(self) -> None:
         self._guild_perms: Dict[str, int] = {}
-        self._role_overwrites: Dict[Tuple[str, str], int] = {}  # (channel, role) → bits
-        self._member_overwrites: Dict[Tuple[str, str], int] = {}
+        # Stored as two ints per (channel, principal) pair.
+        self._role_overwrites: Dict[Tuple[str, str], Tuple[int, int]] = {}
+        self._member_overwrites: Dict[Tuple[str, str], Tuple[int, int]] = {}
 
     def set_guild(self, guild_id: str, perms_value: int) -> None:
         self._guild_perms[str(guild_id)] = perms_value & 0xFFFFFFFF
 
     def set_role_overwrite(self, channel_id: str, role_id: str, *, allow: int = 0, deny: int = 0) -> None:
-        cur = self._role_overwrites.get((channel_id, role_id), 0)
-        self._role_overwrites[(channel_id, role_id)] = (cur | allow) & ~deny & 0xFFFFFFFF
+        cur = self._role_overwrites.get((channel_id, role_id), (0, 0))
+        self._role_overwrites[(channel_id, role_id)] = (
+            (cur[0] | allow) & 0xFFFFFFFF,
+            (cur[1] | deny) & 0xFFFFFFFF,
+        )
 
     def set_member_overwrite(self, channel_id: str, member_id: str, *, allow: int = 0, deny: int = 0) -> None:
-        cur = self._member_overwrites.get((channel_id, member_id), 0)
-        self._member_overwrites[(channel_id, member_id)] = (cur | allow) & ~deny & 0xFFFFFFFF
+        cur = self._member_overwrites.get((channel_id, member_id), (0, 0))
+        self._member_overwrites[(channel_id, member_id)] = (
+            (cur[0] | allow) & 0xFFFFFFFF,
+            (cur[1] | deny) & 0xFFFFFFFF,
+        )
 
     def effective(self, guild_id: str, channel_id: str, member_id: str,
                   member_role_ids: Sequence[str]) -> int:
         perms = self._guild_perms.get(str(guild_id), 0)
+        allow_mask = 0
+        deny_mask = 0
         for rid in member_role_ids:
-            perms = (perms | self._role_overwrites.get((channel_id, rid), 0)) & 0xFFFFFFFF
-        perms = (perms | self._member_overwrites.get((channel_id, member_id), 0)) & 0xFFFFFFFF
-        return perms
+            r = self._role_overwrites.get((channel_id, rid))
+            if r:
+                allow_mask |= r[0]
+                deny_mask |= r[1]
+        m = self._member_overwrites.get((channel_id, member_id))
+        if m:
+            allow_mask |= m[0]
+            deny_mask |= m[1]
+        perms = (perms & ~deny_mask) | allow_mask
+        return perms & 0xFFFFFFFF
 
     def can(self, perms: int, flag: str) -> bool:
         bit = PERMISSION_FLAGS.get(flag)

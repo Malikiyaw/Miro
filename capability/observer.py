@@ -59,7 +59,8 @@ def classify_error(message: str) -> Tuple[ErrorClass, FailureKind]:
         return ErrorClass.PERMISSION_DENIED, FailureKind.PERMANENT
     if "hierarchy" in m or "50013" in m:
         return ErrorClass.HIERARCHY_ERROR, FailureKind.PERMANENT
-    if "not found" in m or "404" in m or "10003" in m or "10004" in m or "10008" in m or "10013" in m:
+    if "not found" in m or "404" in m or "unknown channel" in m or "unknown message" in m \
+            or "10003" in m or "10004" in m or "10008" in m or "10013" in m:
         return ErrorClass.NOT_FOUND, FailureKind.REPLAN_REQUIRED
     if "already" in m or "conflict" in m or "30007" in m or "30005" in m:
         return ErrorClass.ALREADY_EXISTS, FailureKind.PERMANENT
@@ -171,7 +172,9 @@ class DiscordObserver:
 
     # -- built-in verifiers --
     def verify_channel_deleted(self, params: Mapping[str, Any], _) -> VerificationOutcome:
-        return VerificationOutcome.NOT_FOUND if not self.observe_channel(str(params["channel_id"])) \
+        # VERIFIED = the channel is gone (deletion succeeded).
+        # MISMATCH = the channel still exists.
+        return VerificationOutcome.VERIFIED if not self.observe_channel(str(params["channel_id"])) \
             else VerificationOutcome.MISMATCH
 
     def verify_channel_exists(self, params: Mapping[str, Any], _) -> VerificationOutcome:
@@ -198,5 +201,6 @@ class DiscordObserver:
             else VerificationOutcome.NOT_FOUND
 
     def verify_message_absent(self, params: Mapping[str, Any], _) -> VerificationOutcome:
+        # VERIFIED = message is gone (deletion succeeded).
         return VerificationOutcome.VERIFIED if not self.observe_message(str(params["message_id"])) \
             else VerificationOutcome.MISMATCH

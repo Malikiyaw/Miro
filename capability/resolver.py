@@ -117,19 +117,7 @@ class Resolver:
                                          confidence=0.95, label=q)],
                 reason="user-supplied id",
             )
-        # 2. Exact name match in the same guild → 1.0 confidence.
-        if guild_id is not None:
-            m = guild_index.get(str(guild_id), {}).get(q)
-            if m:
-                return ResolutionResult(
-                    resolved=True,
-                    id=m,
-                    confidence=1.0,
-                    candidates=[IdProvenance(id=m, source=ResolutionSource.DISCORD_LOOKUP,
-                                             confidence=1.0, label=q)],
-                    reason="exact name match",
-                )
-        # 3. Case-insensitive scan.
+        # 2. Case-insensitive scan. "foo" must match "foo" only, not "foobar".
         cands: List[IdProvenance] = []
         ql = q.lower()
         for (k, (cid, gid)) in global_index.items():
@@ -144,14 +132,14 @@ class Resolver:
                                           confidence=0.7, label=label))
         if not cands:
             return ResolutionResult(resolved=False, reason=f"no {kind} matches {q!r}")
+        # If there's exactly one candidate at all, return it.
         if len(cands) == 1:
             c = cands[0]
             return ResolutionResult(resolved=True, id=c.id, confidence=c.confidence,
                                     candidates=cands, reason="unique match")
-        # Multiple: highest confidence wins only if it's strict; else require clarification.
+        # Multiple candidates: any case with more than one candidate is ambiguous
+        # — the user may have intended the partial match. The runtime will ask
+        # for clarification instead of guessing on a destructive target.
         cands.sort(key=lambda c: -c.confidence)
-        if cands[0].confidence == 1.0 and not any(c.confidence == 1.0 and c.label != cands[0].label for c in cands[1:]):
-            return ResolutionResult(resolved=True, id=cands[0].id, confidence=cands[0].confidence,
-                                    candidates=cands, reason="single exact match among contains")
         return ResolutionResult(resolved=False, reason=f"{len(cands)} ambiguous {kind} matches",
                                 candidates=cands)

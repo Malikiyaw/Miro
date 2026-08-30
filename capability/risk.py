@@ -76,12 +76,12 @@ class RiskEngine:
             factors.append("moderation impact")
             score += 15
 
-        # Lift the level based on score.
-        if score >= 70 and level in (DangerLevel.LOW, DangerLevel.MEDIUM):
+        # Lift the level based on score. Only ever escalates.
+        if score >= 80 and level in (DangerLevel.LOW, DangerLevel.MEDIUM, DangerLevel.HIGH):
             level = DangerLevel.CRITICAL
-        elif score >= 50 and level == DangerLevel.LOW:
+        elif score >= 50 and level in (DangerLevel.LOW, DangerLevel.MEDIUM):
             level = DangerLevel.HIGH
-        elif score >= 30 and level == DangerLevel.LOW:
+        elif score >= 25 and level == DangerLevel.LOW:
             level = DangerLevel.MEDIUM
 
         return RiskAssessment(level=level, factors=factors, score=score)

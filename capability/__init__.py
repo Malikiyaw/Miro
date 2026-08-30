@@ -47,9 +47,11 @@ from .permissions import (
 )
 from .risk import (
     RiskEngine,
+    RiskAssessment,
     ConfirmationEngine,
     HumanConfirmationPolicy,
     DryRun,
+    DryRunReport,
     ScopeLimit,
 )
 from .bulk import (
@@ -76,6 +78,7 @@ from .queue import (
     RateLimitManager,
     RateLimitBucket,
     ActionQueue,
+    QueueItem,
     PerGuildConcurrency,
     CircuitBreaker,
     CircuitState,
@@ -90,9 +93,10 @@ from .secrets import SecretRedactor, ToolSecurityPolicy
 from .snapshot import ServerSnapshotter, RollbackRegistry, RollbackPlan
 from .composite import (
     CompositeTools,
+    CompositeResult,
     audit_server,
     repair_system,
-    test_system,
+    run_system_test,
 )
 from .guards import (
     LoopGuard,
@@ -126,9 +130,11 @@ __all__ = [
     "ChannelPermissionEngine",
     "PERMISSION_FLAGS",
     "RiskEngine",
+    "RiskAssessment",
     "ConfirmationEngine",
     "HumanConfirmationPolicy",
     "DryRun",
+    "DryRunReport",
     "ScopeLimit",
     "BulkExecutor",
     "BulkResult",
@@ -163,9 +169,10 @@ __all__ = [
     "RollbackRegistry",
     "RollbackPlan",
     "CompositeTools",
+    "CompositeResult",
     "audit_server",
     "repair_system",
-    "test_system",
+    "run_system_test",
     "LoopGuard",
     "ToolCallBudget",
     "BudgetExceeded",

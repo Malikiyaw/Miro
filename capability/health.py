@@ -136,5 +136,5 @@ class JSONSchemaValidator:
         for key, spec in (schema or {}).get("properties", {}).items():
             if key in parameters and spec.get("type") == "array" and spec.get("minItems", 0) > 0 \
                     and len(parameters[key]) < spec["minItems"]:
-                errors.append(f"{key}: must contain at least {spec['minItems']} item(s)")
+                errors.append(f"{key}: minItems={spec['minItems']} violated (got {len(parameters[key])})")
         return errors

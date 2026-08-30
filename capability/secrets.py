@@ -44,6 +44,9 @@ class SecretRedactor:
         return value
 
     def _redact_str(self, s: str) -> str:
+        # Standalone opaque tokens (>= 16 chars, alphanumeric+underscore+hyphen).
+        if re.match(r"^[A-Za-z0-9_\-]{16,}$", s):
+            return f"[REDACTED:token] {s[:4]}…"
         out = s
         for kind, pat in _PATTERNS:
             new = pat.sub(f"[REDACTED:{kind}]", out)
