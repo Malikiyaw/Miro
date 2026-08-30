@@ -84,7 +84,6 @@ from .health import (
     ToolHealthMonitor,
     ToolVersion,
     JSONSchemaValidator,
-    parameters_hash,
 )
 from .secrets import SecretRedactor, ToolSecurityPolicy
 from .snapshot import ServerSnapshotter, RollbackRegistry, RollbackPlan
