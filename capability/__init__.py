@@ -43,6 +43,7 @@ from .permissions import (
     PermissionCheck,
     RoleHierarchyEngine,
     ChannelPermissionEngine,
+    PERMISSION_FLAGS,
 )
 from .risk import (
     RiskEngine,
@@ -102,7 +103,7 @@ from .guards import (
 )
 from .completion import CompletionGate
 from .receipt import ExecutionReceipt, ReceiptManager
-from .discovery import IntentClassifier, CapabilityDiscovery
+from .discovery import IntentClassifier, CapabilityDiscovery, DiscoverySlice
 from .bootstrap import bootstrap_registry, get_default_registry, wrap_action_method
 
 __all__ = [
@@ -123,6 +124,7 @@ __all__ = [
     "PermissionCheck",
     "RoleHierarchyEngine",
     "ChannelPermissionEngine",
+    "PERMISSION_FLAGS",
     "RiskEngine",
     "ConfirmationEngine",
     "HumanConfirmationPolicy",
@@ -147,6 +149,7 @@ __all__ = [
     "RateLimitManager",
     "RateLimitBucket",
     "ActionQueue",
+    "QueueItem",
     "PerGuildConcurrency",
     "CircuitBreaker",
     "CircuitState",
@@ -173,6 +176,7 @@ __all__ = [
     "ReceiptManager",
     "IntentClassifier",
     "CapabilityDiscovery",
+    "DiscoverySlice",
     "bootstrap_registry",
     "get_default_registry",
     "wrap_action_method",

@@ -74,7 +74,7 @@ class ToolDefinition:
 
     name: str
     description: str
-    category: ToolCategory
+    category: ToolCategory = ToolCategory.AGENT
     parameters: Mapping[str, Any] = field(default_factory=dict)
     required_permissions: Sequence[str] = field(default_factory=tuple)
     danger_level: DangerLevel = DangerLevel.LOW
